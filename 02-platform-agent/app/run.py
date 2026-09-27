@@ -164,7 +164,7 @@ def main(argv: list[str]) -> int:
     say("record", f"job recorded on the agent stream as frame {ack.frame_id} (accepted={ack.accepted})")
     check = cx.check(subject_id=subject)
     print(f"         breaker for {subject}: {check.state} (allow={check.allow}) — {check.reason}")
-    print("         the policies in governance.py decide this from what reasoning tags on that stream")
+    print("         the policies in solution.yaml decide this from what reasoning tags on that stream")
     cx.close()
     return 0
 

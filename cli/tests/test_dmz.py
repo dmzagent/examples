@@ -129,32 +129,169 @@ class TestAuthProfiles(CliCase):
         self.assertIn("nothing saved", err)
 
 
-class TestGovernanceVerbs(CliCase):
-    def test_init_plan_apply_verify_outputs(self):
-        code, out, _ = run("init", "mcp", "--dir", "proj", "--name", "Harbor agent")
+MANIFEST = {
+    "apiVersion": "dmzagent.com/v1", "kind": "SolutionManifest",
+    "metadata": {"name": "harbor", "vendor": "${DMZAGENT_VENDOR}", "version": 1},
+    "spec": {
+        "divisions": [{"id": "main", "division_id": "${DMZAGENT_DIVISION_ID}", "config": {"enforcement_posture": "${posture:-enforce}"}}],
+        "corpora": [{"id": "support-corpus", "reasoning_canons": ["library/cn_seed_openai_agent_safety@latest"]}],
+        "workspaces": [{"id": "support", "workspace_id": "${DMZAGENT_WORKSPACE_ID}", "division": "main",
+                        "engine": "reasoning", "corpus": "support-corpus"}],
+        "circuit_breaker_policies": [{"id": "block-pii", "workspace": "support", "name": "Block on PII leak",
+                                      "rules": [{"tag": "rt_agent_pii_leak_v1", "op": ">=", "value": 0.6}], "action": "block"}],
+        "policies": [{"id": "hold-misuse", "workspace": "support", "name": "Hold on tool misuse",
+                      "when": [{"kind": "strength", "label": "rt_agent_tool_misuse_v1", "op": ">=", "threshold": 0.5}],
+                      "lane": "enforce", "level": "hold"}],
+        "chatbots": [{"id": "support-bot", "workspace": "support", "agent_name": "Harbor Supply support",
+                      "site_domain": "support.harbor.example", "protected_action": "refund.issue",
+                      "system_prompt": "Be brief."}],
+        "roles": [{"principal": "auditor@harbor.example", "role": "auditor", "scope": "main"}],
+        "expectations": [{"id": "misuse-holds", "workspace": "support", "labels": {"rt_agent_tool_misuse_v1": 0.7},
+                          "enforce": "hold"}],
+        "deployment": {"target": "cloud", "license": "${ACME_LICENSE_KEY}"},
+    },
+}
+
+
+class TestManifestWheel(CliCase):
+    def setUp(self):
+        self.fake.stacks.clear()
+        self.fake.drift = []
+        self.fake.cb_policies.clear()
+        self.fake.policies.clear()
+        self.fake.chatbots.clear()
+        Path("proj").mkdir(exist_ok=True)
+        Path("proj/solution.json").write_text(json.dumps(MANIFEST))
+
+    def test_init_writes_a_manifest_with_placeholders(self):
+        code, out, _ = run("init", "mcp", "--dir", "fresh", "--name", "Harbor agent")
         self.assertEqual(code, 0)
-        gov = Path("proj/governance.py")
-        self.assertTrue(gov.exists())
-        code, _, err = run("init", "mcp", "--dir", "proj")
+        text = Path("fresh/solution.yaml").read_text()
+        self.assertIn("kind: SolutionManifest", text)
+        self.assertIn("${DMZAGENT_WORKSPACE_ID}", text)
+        self.assertIn("role: auditor", text)
+        code, _, err = run("init", "mcp", "--dir", "fresh")
         self.assertEqual(code, 2, err)
 
-        code, out, _ = run("plan", str(gov))
+    def test_placeholders_are_filled_from_the_key_and_vars_only(self):
+        code, out, _ = run("validate", "proj/solution.json", "--var", "posture=observe")
+        self.assertEqual(code, 0, out)
+        self.assertIn("valid", out)
+        sent = json.loads(self.fake.calls_bodies[-1]["manifest"]) if hasattr(self.fake, "calls_bodies") else None
+        # the fake received the substituted text: adoption ids and the var filled, the secret left as a reference
+        received = self.fake.last_manifest
+        self.assertEqual(received["spec"]["workspaces"][0]["workspace_id"], "ws_test")
+        self.assertEqual(received["spec"]["divisions"][0]["division_id"], "dv_test")
+        self.assertEqual(received["spec"]["divisions"][0]["config"]["enforcement_posture"], "observe")
+        self.assertEqual(received["spec"]["deployment"]["license"], "${ACME_LICENSE_KEY}")
+        self.assertEqual(received["metadata"]["vendor"], "vd_1")
+
+    def test_validate_reports_issues_and_guardrails(self):
+        m = json.loads(json.dumps(MANIFEST))
+        m["spec"]["chatbots"][0].pop("site_domain")
+        m["spec"]["roles"] = []
+        Path("proj/bad.json").write_text(json.dumps(m))
+        code, out, _ = run("validate", "proj/bad.json")
+        self.assertEqual(code, 1)
+        self.assertIn("site_domain is required", out)
+        m["spec"]["chatbots"][0]["site_domain"] = "x.example"
+        Path("proj/bad.json").write_text(json.dumps(m))
+        code, out, _ = run("validate", "proj/bad.json", "--strict")
+        self.assertEqual(code, 1)
+        self.assertIn("auditor", out)
+
+    def test_plan_apply_verify_stack_and_env(self):
+        code, out, _ = run("plan", "proj/solution.json")
         self.assertEqual(code, 0, out)
         self.assertIn("to add", out)
-        code, out, _ = run("apply", str(gov), "--write-env", "proj/app/.env")
+        self.assertIn("support-bot", out)
+        code, out, _ = run("plan", "proj/solution.json", "--markdown")
+        self.assertTrue(out.startswith("### Solution Manifest plan"))
+        code, out, err = run("apply", "proj/solution.json", "--approved-by", "ravi@harbor.example", "--yes",
+                             "--write-env", "proj/app/.env")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("applied", out)
+        env = Path("proj/app/.env").read_text()
+        self.assertIn("DMZAGENT_WORKSPACE_ID=ws_test", env)
+        self.assertIn("DMZ_CHATBOT_SUPPORT_BOT=emb_", env)
+        self.assertIn("DMZ_CIRCUIT_BREAKER_POLICY_BLOCK_PII=cbp_", env)
+        self.assertEqual(stat.S_IMODE(Path("proj/app/.env").stat().st_mode), 0o600)
+        # the platform now holds the policy and the chat agent
+        self.assertEqual([p["name"] for p in self.fake.cb_policies.values()], ["Block on PII leak"])
+        self.assertEqual(len(self.fake.chatbots), 1)
+        code, out, _ = run("apply", "proj/solution.json", "--approved-by", "ravi@harbor.example", "--yes")
+        self.assertIn("no change", out)
+        code, out, _ = run("verify", "proj/solution.json")
         self.assertEqual(code, 0, out)
-        env = Path("proj/app/.env")
-        self.assertTrue(env.exists())
-        self.assertEqual(stat.S_IMODE(env.stat().st_mode), 0o600)
-        self.assertIn("DMZAGENT_APP_KEY=", env.read_text())
-        code, out, _ = run("plan", str(gov))
-        self.assertIn("unchanged", out)
-        code, out, _ = run("verify", str(gov), "--json")
+        self.assertIn("1 passed, 0 failed", out)
+        code, out, _ = run("stack", "proj/solution.json")
         self.assertEqual(code, 0)
-        self.assertTrue(all(r["ok"] for r in json.loads(out)))
-        code, out, _ = run("outputs", str(gov), "--json")
+        self.assertIn("ravi@harbor.example", out)
+        self.assertIn("emb_", out)
+        code, out, _ = run("stacks")
+        self.assertIn("harbor", out)
+
+    def test_an_edit_plans_as_an_update(self):
+        run("apply", "proj/solution.json", "--approved-by", "ravi@harbor.example", "--yes")
+        m = json.loads(json.dumps(MANIFEST))
+        m["spec"]["circuit_breaker_policies"][0]["rules"][0]["value"] = 0.8
+        Path("proj/solution.json").write_text(json.dumps(m))
+        code, out, _ = run("plan", "proj/solution.json")
+        self.assertIn("~", out)
+        self.assertIn("block-pii", out)
+        self.assertIn("rules", out)
+
+    def test_maker_checker_and_the_role_gate_are_explained(self):
+        code, _, err = run("apply", "proj/solution.json", "--yes")
+        self.assertEqual(code, 3)
+        self.assertIn("approver", err)
+        self.assertIn("--approved-by", err)
+        code, _, err = run("apply", "proj/solution.json", "--yes", "--applied-by", "ravi", "--approved-by", "ravi")
+        self.assertEqual(code, 3)
+        self.assertIn("different principal", err)
+        self.fake.role = "analyst"
+        try:
+            code, _, err = run("apply", "proj/solution.json", "--yes", "--approved-by", "ravi")
+            self.assertEqual(code, 3)
+            self.assertIn("tenant_admin", err)
+            self.assertEqual(run("plan", "proj/solution.json")[0], 0)      # analysts may plan
+        finally:
+            self.fake.role = "tenant_admin"
+
+    def test_drift_is_reported_and_reconciled(self):
+        run("apply", "proj/solution.json", "--approved-by", "ravi@harbor.example", "--yes")
+        code, out, _ = run("drift", "proj/solution.json")
         self.assertEqual(code, 0)
-        self.assertIn("sdk_key/harbor-agent agent", json.loads(out))
+        self.assertIn("no drift", out)
+        self.fake.drift = [{"logical_id": "block-pii", "kind": "circuit_breaker_policy", "drift": "modified",
+                            "changed_keys": ["action"], "desired": {"action": "block"}, "observed": {"action": "review"}}]
+        code, out, _ = run("drift", "proj/solution.json")
+        self.assertEqual(code, 1)
+        self.assertIn("block-pii", out)
+        self.assertIn("review", out)
+        code, out, _ = run("drift", "proj/solution.json", "--reconcile")
+        self.assertEqual(code, 0)
+        self.assertIn("reconciled", out)
+
+    def test_keys_mint_resolves_the_workspace_through_the_stack(self):
+        run("apply", "proj/solution.json", "--approved-by", "ravi@harbor.example", "--yes")
+        code, out, _ = run("keys", "mint", "proj/solution.json", "--workspace", "support", "--label", "site",
+                           "--write-env", "proj/app/.env")
+        self.assertEqual(code, 0, out)
+        self.assertIn("minted", out)
+        env = Path("proj/app/.env").read_text()
+        self.assertIn("DMZAGENT_APP_KEY=ck_", env)
+        self.assertNotIn(self.fake.minted_keys[-1]["key"], out)
+        self.assertEqual(self.fake.minted_keys[-1]["workspace_id"], "ws_test")
+        code, _, err = run("keys", "mint", "proj/solution.json", "--workspace", "nope", "--label", "x")
+        self.assertEqual(code, 2)
+
+    def test_destroy_removes_the_managed_resources(self):
+        run("apply", "proj/solution.json", "--approved-by", "ravi@harbor.example", "--yes")
+        code, out, _ = run("destroy", "proj/solution.json", "--approved-by", "ravi@harbor.example", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.fake.cb_policies, {})
+        self.assertEqual(self.fake.chatbots, {})
 
     def test_init_lists_templates(self):
         code, out, _ = run("init", "--list")

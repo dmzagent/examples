@@ -16,8 +16,11 @@ The same server can sit behind Claude Code, Claude Desktop or Cursor. The
 second half of this page attaches it.
 
 ```
-governance.py    what moves the customer's breaker, and the agent's analyst key
-setup.sh         plan → apply → verify, then the host configuration
+solution.yaml    the Solution Manifest: what moves the customer's breaker (a
+                 hard stop on a leak, a hold and a review on tool misuse, a
+                 flag on scope creep), the auditor role, the expectations
+setup.sh         validate → plan → apply → mint the agent's key → verify,
+                 then the host configuration
 app/agent.py     the agent: Ollama, the platform's MCP tools, the harness gate
 ```
 
@@ -25,7 +28,8 @@ app/agent.py     the agent: Ollama, the platform's MCP tools, the harness gate
 
 ```bash
 export DMZAGENT_API_KEY=ck_...       # tenant_admin, for setup
-./setup.sh
+export DMZ_APPROVED_BY=reviewer      # who approved the change (maker-checker); in CI, the merger
+./setup.sh                           # applies the manifest, mints the agent's analyst key into app/.env
 ollama pull llama3.1                 # any tool-capable model; OLLAMA_MODEL picks another
 python3 app/agent.py --script        # the scripted day
 python3 app/agent.py                 # a conversation
@@ -83,6 +87,19 @@ dmz mcp record customer:alice refund_issued --actor human
 `enforce_covenant` consults the same breaker `check()` in the SDK consults,
 so the verdict an MCP agent gets and the decision an SDK application gets
 for the same subject are identical, and both are anchored on the ledger.
+
+## What the manifest declares
+
+| Section of `solution.yaml` | Effect |
+|---|---|
+| `corpora[agent-corpus].reasoning_canons` | the PII-leak, scope-creep and tool-misuse vocabulary, installed by apply |
+| `circuit_breaker_policies`: `block` on PII leak, `review` on scope creep | an export that would leak is a hard stop; drift is flagged, not stopped |
+| `policies`: `enforce/hold` + `coordinate/review` on tool misuse | the customer's breaker pauses and a person is asked |
+| `roles`: an auditor on the division | the segregation of duties the vendor guardrail requires |
+| `expectations` | tool misuse holds and asks; a leak is a hard stop; `dmz verify` runs them |
+
+The agent's key is minted by `setup.sh` with `dmz keys mint`: analyst, so it
+may pre-flight, write to the ledger and read state, and nothing more.
 
 ## Attach it to Claude Code, Claude Desktop or Cursor
 

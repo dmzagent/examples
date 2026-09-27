@@ -44,15 +44,18 @@ class Config:
         self.api_key = env.get("DMZAGENT_APP_KEY", "")
         self.workspace_id = env.get("DMZAGENT_WORKSPACE_ID", "")
         self.division_id = env.get("DMZAGENT_DIVISION_ID", "")
-        self.embed_id = env.get("CHATBOT_EMBED_ID", "")
-        self.agent_subject_id = env.get("CHATBOT_AGENT_SUBJECT_ID", "")
+        # `dmz apply --write-env` records the chat agent the manifest declared as
+        # DMZ_CHATBOT_SUPPORT_BOT (its embed id); the agent's own subject follows.
+        self.embed_id = env.get("DMZ_CHATBOT_SUPPORT_BOT") or env.get("CHATBOT_EMBED_ID", "")
+        self.agent_subject_id = env.get("CHATBOT_AGENT_SUBJECT_ID") or (
+            f"subject:{self.division_id}:chat-agent:{self.embed_id}" if self.division_id and self.embed_id else "")
         self.embed_script_url = env.get("CHATBOT_EMBED_SCRIPT_URL", f"{self.base_url}/v1/embed/chat.js")
         self.embed_chat_url = env.get("CHATBOT_EMBED_CHAT_URL", f"{self.base_url}/v1/embed/{self.embed_id}/chat")
-        self.agent_name = env.get("CHATBOT_AGENT_NAME", "Support")
+        self.agent_name = env.get("CHATBOT_AGENT_NAME", "Harbor Supply support")
 
     def missing(self) -> list[str]:
         need = {"DMZAGENT_APP_KEY": self.api_key, "DMZAGENT_WORKSPACE_ID": self.workspace_id,
-                "CHATBOT_EMBED_ID": self.embed_id, "CHATBOT_AGENT_SUBJECT_ID": self.agent_subject_id}
+                "DMZAGENT_DIVISION_ID": self.division_id, "DMZ_CHATBOT_SUPPORT_BOT": self.embed_id}
         return [k for k, v in need.items() if not v]
 
 

@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli" / "tests"))
 
 import agent as agent_module  # noqa: E402
-import governance as gov_module  # noqa: E402
 from dmz.mcp.client import McpClient  # noqa: E402
 from fake_platform import FakePlatform, FakePlatformHTTP  # noqa: E402
 
@@ -157,12 +156,15 @@ class TestAgent(unittest.TestCase):
         self.assertEqual(self.calls(), [])
 
 
-class TestGovernance(unittest.TestCase):
-    def test_the_agent_holds_an_analyst_key_and_the_breaker_rules_exist(self):
-        g = gov_module.governance
-        self.assertEqual([k.env_var for k in g.by_kind("sdk_key")], ["DMZAGENT_APP_KEY"])
-        self.assertEqual({p.action for p in g.by_kind("breaker_policy")}, {"block", "review"})
-        self.assertEqual(g.by_kind("canon")[0].canon_id, "cn_seed_openai_agent_safety")
+class TestManifest(unittest.TestCase):
+    def test_the_manifest_declares_the_breaker_rules_and_an_analyst_key_is_minted_by_setup(self):
+        text = (Path(__file__).resolve().parents[1] / "solution.yaml").read_text()
+        self.assertIn("kind: SolutionManifest", text)
+        self.assertIn("action: block", text)
+        self.assertIn("action: review", text)
+        self.assertIn("cn_seed_openai_agent_safety", text)
+        setup = (Path(__file__).resolve().parents[1] / "setup.sh").read_text()
+        self.assertIn("keys mint solution.yaml --workspace agents", setup)
 
 
 if __name__ == "__main__":

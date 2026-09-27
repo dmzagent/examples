@@ -1,8 +1,6 @@
-# Written by setup.sh / giaas apply: keys and platform ids for one workspace.
+# Written by setup.sh (dmz apply --write-env, dmz keys mint): keys and platform ids for one workspace.
 .env
 **/.env
-.giaas/
-**/.giaas/
 **/app/.agent.json
 __pycache__/
 *.pyc

@@ -1,10 +1,12 @@
 """``dmz completion bash|zsh|fish``: tab completion for the command tree."""
 from __future__ import annotations
 
-COMMANDS = ["auth", "whoami", "doctor", "init", "plan", "apply", "verify", "destroy", "outputs",
-            "check", "hold", "release", "engage", "states", "decisions", "reviews", "watch", "mcp", "completion"]
+COMMANDS = ["auth", "whoami", "doctor", "init", "validate", "plan", "apply", "verify", "destroy", "drift",
+            "stack", "stacks", "keys", "check", "hold", "release", "engage", "states", "decisions", "reviews",
+            "watch", "mcp", "completion"]
 SUBCOMMANDS = {
     "auth": ["set", "status", "clear"],
+    "keys": ["mint"],
     "reviews": ["claim", "resolve", "release", "hold", "escalate"],
     "mcp": ["tools", "resources", "read", "call", "enforce", "record", "ping", "config", "bridge"],
     "init": ["chatbot", "agent", "sdk-app", "desk", "logic", "mcp"],

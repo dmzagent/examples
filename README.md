@@ -2,13 +2,18 @@
 
 Runnable examples for the DMZAgent platform and its SDKs.
 
-Six of them form a suite. Each is built the same way: a **governance file**
-that declares what the platform should hold for the application, a **setup
-script** that plans, applies and verifies it against your workspace, and an
-**application** that runs against the platform. The governance file is code,
-so what an application is allowed to do goes through the same review, history
-and CI as the application itself. One command line, `dmz`, runs the loop:
-setup, operations, and the platform's MCP server in front of any host.
+Six of them form a suite. Each is built the same way: a **Solution
+Manifest** (`solution.yaml`) that declares what the platform should hold for
+the application, a **setup script** that validates, plans, applies and
+verifies it through the platform's own GitOps wheel, and an **application**
+that runs against the platform. The manifest is the platform's declarative
+surface: the platform validates it, computes the Change Set against the
+deployed Stack, refuses an apply without a second approver or an auditor,
+provisions the resources, anchors every version on the ledger, and reports
+drift. What an application is allowed to do therefore goes through the same
+review, history and CI as the application itself. One command line, `dmz`,
+runs the loop: the manifest wheel, operations, and the platform's MCP server
+in front of any host.
 
 ## The suite
 
@@ -35,8 +40,8 @@ that boots one Firecracker microVM per task. It has its own README.
 
 ```
 NN-name/
-  governance.py   the governance the application needs, as code
-  setup.sh        plan → apply → verify against your workspace; writes app/.env
+  solution.yaml   the Solution Manifest: the governance the application needs
+  setup.sh        validate → plan → apply → mint the app's key → verify; writes app/.env
   app/            the application
   tests/          unit tests against fakes; no platform or key needed
   README.md       what it shows, how to run it, what to watch for
@@ -44,16 +49,20 @@ NN-name/
 
 ## The command line
 
-[`cli/`](cli) holds `dmz`, the command line the examples are built around,
-and `giaas`, the library the governance files are written for. Standard
-library only; `pip install ./cli` puts `dmz` on PATH, and the setup scripts
-run it from the clone without installing.
+[`cli/`](cli) holds `dmz`, the command line the examples are built around.
+Standard library only; `pip install ./cli` puts `dmz` on PATH, and the setup
+scripts run it from the clone without installing.
 
 ```
 dmz auth set                        # paste a key once; saved for this machine
-dmz doctor                          # key, endpoint, role, Canons, MCP server, Ollama
-dmz init chatbot                    # a governance.py to start from
-dmz plan && dmz apply               # reconcile the workspace with it
+dmz doctor                          # key, endpoint, role, the manifest surface, MCP server, Ollama
+dmz init chatbot                    # a solution.yaml to start from
+dmz validate && dmz plan            # check the manifest; see the Change Set against the Stack
+dmz apply --approved-by ravi        # reconcile (maker-checker: the approver is not the applier)
+dmz keys mint --workspace support --label site --write-env app/.env
+dmz verify                          # the file's expectations, on the platform's evaluator
+dmz stack                           # the Stack: resources, physical ids, versions, approvers
+dmz drift                           # has anything managed changed behind the file's back?
 dmz check customer:alice            # may an agent act on this subject now?
 dmz hold customer:alice --reason "chargeback dispute"
 dmz reviews                         # what is waiting for a person
@@ -62,8 +71,19 @@ dmz mcp config --client claude-code # attach it to Claude Code (or claude-deskto
 ```
 
 The [CLI README](cli/README.md) is the reference for the commands, the
-governance declarations, and the MCP bridge; each example's `governance.py`
-is a worked one.
+manifest, and the MCP bridge; each example's `solution.yaml` is a worked
+manifest.
+
+## The GitOps wheel
+
+[`.github/workflows/governance.yml`](.github/workflows/governance.yml) is
+the wheel the manifests are meant to turn in. A pull request that edits a
+`solution.yaml` gets its Change Set posted as a comment (`dmz plan
+--markdown`); merging it applies the manifest with the PR's author as maker
+and the merger as checker. The platform refuses when they are the same
+principal, so branch protection is what makes the four-eyes control sound.
+The workflow needs a `DMZAGENT_API_KEY` repository secret (tenant_admin for
+the workspace the manifests adopt) and skips, rather than fails, without it.
 
 ## Running an example
 
@@ -72,24 +92,34 @@ API key for it from the console. Then:
 
 ```
 export DMZAGENT_API_KEY=ck_...            # never commit this; setup writes app/.env (mode 0600)
+export DMZ_APPROVED_BY=reviewer           # who approved the change; the platform refuses the applier's own name
 export DMZAGENT_BASE_URL=https://...      # only if you are not on the default endpoint
 cd 01-hosted-chatbot
-./setup.sh                                # dmz plan, apply, verify; app/.env gets the ids and an app key
+./setup.sh                                # dmz validate, plan, apply, keys mint, verify; app/.env gets the ids and an app key
 python3 app/serve.py                      # then open http://localhost:8000
 ```
 
-`setup.sh` is safe to run again: an unchanged file plans as "unchanged", an
-edited one as an update, and `dmz destroy` takes the example's resources
-back out. `dmz doctor` says what is missing before you start.
+`setup.sh` is safe to run again: an unchanged file plans as "unchanged" and
+applies as "no change", an edited one as an update with a new Stack version,
+and `dmz destroy` takes the example's rules back out (the workspace and its
+data are retained). `dmz doctor` says what is missing before you start.
 
 Before you start:
 
-- **One workspace per example.** Breaker policies apply to every subject in a
-  workspace, and `verify` evaluates the workspace as it is, so two examples
-  sharing one will see each other's rules in their results.
-- **Canons are installed in the console.** An API key cannot install one.
-  When a governance file requires a Canon the workspace lacks, `setup.sh`
-  stops and says which, and where in the console to install it.
+- **The platform must carry the manifest surface.** `dmz doctor` checks for
+  it (`GET /v1/stacks`); a deployment without it answers 404 and the setup
+  scripts cannot run there.
+- **Every apply names two people.** `--approved-by` (or `DMZ_APPROVED_BY`)
+  is the checker; the applier is the key's principal unless `--applied-by`
+  says otherwise. The vendor guardrails also require an auditor role on the
+  division, which every manifest here declares.
+- **One workspace per example.** The manifests adopt the workspace the key
+  is bound to (`${DMZAGENT_WORKSPACE_ID}`). Breaker policies apply to every
+  subject in a workspace, and `verify` evaluates the workspace as it is, so
+  two examples sharing one will see each other's rules in their results.
+- **Canons are installed by apply.** Each manifest's corpus pins the Canons
+  the rules need (`library/cn_...@latest`); the platform installs them into
+  the workspace when the manifest is applied. Nothing is done in the console.
 - **05 needs a logic workspace**; the others need a reasoning workspace.
 - **03 and 06 need Ollama** running locally with a tool-capable model pulled.
 - **MCP hosts need the bridge.** The platform's MCP server speaks its own
@@ -105,9 +135,10 @@ Before you start:
 
 ## Tests
 
-Every example and the toolkit have unit tests that run against in-process
-fakes, so they need no platform, no key and no network beyond installing the
-SDK:
+Every example and the command line have unit tests that run against
+in-process fakes (the CLI's fake platform carries the manifest engine, so the
+whole validate → plan → apply → verify → drift → destroy wheel is exercised),
+so they need no platform, no key and no network beyond installing the SDK:
 
 ```
 PYTHONPATH=cli python3 -m unittest discover -s cli/tests -v
@@ -134,7 +165,7 @@ Conformance is proved there, by the shared vectors each SDK runs in its own
 ## Conventions for a new example
 
 - One directory per example, named for what it demonstrates.
-- A `governance.py`, a `setup.sh` that runs `dmz`, and an `app/`, if it runs against the platform.
+- A `solution.yaml`, a `setup.sh` that runs `dmz`, and an `app/`, if it runs against the platform.
 - A `README.md` that states what it shows, how to run it, and what to watch for.
 - Tests against fakes, so CI can run them without a workspace.
 - Pin the SDK explicitly, so the example keeps working when the SDK moves.

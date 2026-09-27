@@ -9,13 +9,17 @@ breaker before it lets a pump's actuator run.
 
 This is the same platform, the same breaker, the same ledger and review queue
 as the chatbot examples, pointed at a system that acts without ever being
-asked a question. The rulebook is a versioned document in `governance.py`;
-change a threshold, apply, and the plan shows a new version being published.
+asked a question. The rulebook is a Logic Canon declared inline in
+`solution.yaml`; change a threshold, apply, and the plan shows the canon
+being updated and the corpus and workspace re-applied with the new version.
 
 ```
-governance.py    the rulebook (four rules, two with accumulators and bands),
-                 the policies on the logic soul, posture, the controller key
-setup.sh         plan → apply → verify; installs the SDK
+solution.yaml    the Solution Manifest: the rulebook (four rules, two with
+                 accumulators and bands) as an inline Logic Canon, the corpus
+                 that pins it, the logic workspace, the policies on the logic
+                 soul, posture, the auditor role, the expectations
+setup.sh         validate → plan → apply → mint the controller's key →
+                 verify; installs the SDK
 app/fleet.py     the controller: telemetry in, breaker check before each
                  actuator tick, logic souls at the end
 ```
@@ -27,7 +31,8 @@ the console, choose the logic engine. Mint a tenant_admin key for it, then:
 
 ```bash
 export DMZAGENT_API_KEY=ck_...
-./setup.sh                                  # publishes and installs the rulebook
+export DMZ_APPROVED_BY=reviewer             # who approved the change (maker-checker); in CI, the merger
+./setup.sh                                  # publishes the rulebook, installs it, writes app/.env
 python3 app/fleet.py                        # the scripted day
 python3 app/fleet.py --pump pump-7 --temp 92 --ticks 8   # drive one pump by hand
 python3 app/fleet.py --run tue              # replay the day on fresh subjects
@@ -60,23 +65,37 @@ subjects.
 
 Half-lives are the point. One hot reading is recorded and forgotten. Three
 inside ten minutes hold the pump; five ask a person; the policy in
-`governance.py` blocks it outright at six. Reinforcement climbs, quiet decays.
+`solution.yaml` blocks it outright at six. Reinforcement climbs, quiet decays.
 
 On install, the platform translates the rulebook's inline dispositions into
 policies on the logic soul, one per band, so every response goes through the
-same policy engine the reasoning examples use. `governance.py` adds two the
+same policy engine the reasoning examples use. `solution.yaml` adds two the
 rulebook does not name: the hard stop at strength 6 and a review for an
 offline sensor.
 
-## What the governance declares
+## What the manifest declares
 
-| Declaration | Effect |
+| Section of `solution.yaml` | Effect |
 |---|---|
-| `logic_rulebook(...)` | a private Logic Canon: published as version 1, republished as version N+1 when the rules change, installed into the workspace |
-| `policy(..., soul="logic")` | responses on accumulated labels: block at strength 6, review an offline sensor |
-| `division_config(enforcement_posture=...)` | `observe` to watch the rate first, `enforce` when ready |
-| `sdk_key(...)` | the controller's analyst key: it emits events and checks breakers |
-| `expect(..., soul="logic")` | what the engine must resolve at strengths 1, 4 and 6 |
+| `logic_canons[chiller]` with an inline `rulebook` | a private Logic Canon: published as version 1 by the first apply, republished as version N+1 when the rules change |
+| `corpora[fleet-corpus].logic_canons: [chiller]` | the corpus pins the inline canon; a new version re-applies the corpus and the workspace, so the workspace always carries the rules in the file |
+| `workspaces[fleet]` with `engine: logic` | the adopted workspace runs the logic engine; apply sets the engine kind if it differs |
+| `policies` with `soul: logic` | responses on accumulated labels: block at strength 6, review an offline sensor |
+| `divisions[main].config.enforcement_posture` | `observe` to watch the rate first, `enforce` when ready |
+| `roles`: an auditor on the division | the segregation of duties the vendor guardrail requires |
+| `expectations` with `soul: logic` | what the engine must resolve at strengths 1, 4 and 6; `dmz verify` runs them |
+
+The controller's key is minted by `setup.sh` with `dmz keys mint` (analyst:
+it emits events and checks breakers) and written to `app/.env`.
+
+Edit a threshold and run `./setup.sh` again to see the versioning:
+
+```
+Plan: 0 to add, 3 to change, 0 to replace, 0 to remove, 4 unchanged
+  ~ logic_canon              chiller  rulebook
+  ~ corpus                   fleet-corpus  re-applied: chiller changed
+  ~ workspace                fleet  re-applied: fleet-corpus changed
+```
 
 ## Honest limits
 
@@ -84,9 +103,10 @@ offline sensor.
   no method for the logic door yet, and `check()` is the SDK.
 - Releasing a held pump is a person's act: the console's review queue, or
   `POST /v1/cb/release` as the desk in example 04 does.
-- Only a logic workspace evaluates rulebooks. The setup does not create
-  workspaces (a console operation), so it says so if the key belongs to a
-  reasoning workspace.
+- Only a logic workspace evaluates rulebooks. The manifest adopts the
+  workspace the key is bound to and declares `engine: logic`; apply switches
+  the engine of a reasoning workspace rather than refusing, so point this
+  example at a workspace made for it.
 
 ## Tests
 

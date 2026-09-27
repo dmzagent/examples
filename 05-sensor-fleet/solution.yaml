@@ -1,0 +1,118 @@
+# Solution Manifest for deterministic governance of Harbor Supply's chiller fleet.
+#
+# No chatbot, no model. The rulebook below is a private Logic Canon declared
+# inline: the platform publishes a new version whenever its content changes and
+# installs that version into the workspace, so the rules are versioned with
+# this file. Rules are predicates over event fields; an `accumulate` block
+# turns repeated matches into a decaying strength with bands that escalate
+# record -> enforce -> human.
+#
+# Needs a LOGIC workspace.   ./setup.sh [--var posture=observe]
+#
+apiVersion: dmzagent.com/v1
+kind: SolutionManifest
+metadata:
+  name: harbor-sensor-fleet
+  vendor: ${DMZAGENT_VENDOR}
+  version: 1
+spec:
+  divisions:
+    - id: main
+      division_id: ${DMZAGENT_DIVISION_ID}
+      config:
+        enforcement_posture: ${posture:-enforce}
+
+  logic_canons:
+    - id: chiller
+      slug: chiller-thermal
+      name: Chiller thermal rulebook
+      description: thermal and pressure controls for the chiller pumps
+      rulebook:
+        rules:
+          - id: over-temp
+            description: coolant above 85 °C; sustained excursions escalate, isolated ones decay away
+            match: {predicate: comparison, field: temp_c, gt: 85}
+            accumulate:
+              weight: 1.0
+              half_life: 10m
+              bands: {record: 1, enforce: 3, human: 5}
+            on_true:
+              - {disposition: enforce, level: hold, tag: thermal_stress, severity: 3}
+          - id: pressure-spike
+            description: discharge pressure over 9 bar
+            match: {predicate: comparison, field: pressure_bar, gt: 9}
+            accumulate:
+              weight: 2.0
+              half_life: 5m
+              bands: {record: 2, enforce: 4}
+            on_true:
+              - {disposition: enforce, level: block, tag: over_pressure, severity: 4}
+          - id: sensor-offline
+            description: the sensor stopped reporting a valid status
+            match: {predicate: value, field: status, in: [offline, fault]}
+            on_true:
+              - {disposition: coordinate, level: review, tag: sensor_offline}
+          - id: bad-reading
+            description: a reading outside the physically possible range is data trouble, not thermal trouble
+            match:
+              op: or
+              of:
+                - {predicate: comparison, field: temp_c, lt: -40}
+                - {predicate: comparison, field: temp_c, gt: 200}
+            on_true:
+              - {disposition: record, tag: bad_reading}
+
+  corpora:
+    - id: fleet-corpus
+      logic_canons: [chiller]                 # the inline canon above, pinned at apply
+
+  workspaces:
+    - id: fleet
+      workspace_id: ${DMZAGENT_WORKSPACE_ID}
+      division: main
+      engine: logic
+      corpus: fleet-corpus
+
+  # Policies on the logic soul: the hard stop the rulebook does not name.
+  policies:
+    - id: block-thermal-stress
+      workspace: fleet
+      name: Block a pump under sustained thermal stress
+      description: Six weighted excursions inside the half-life window is a failing pump, not a hot afternoon.
+      when: [{kind: strength, label: thermal_stress, op: ">=", threshold: 6}]
+      lane: enforce
+      level: block
+      soul: logic
+    - id: review-offline-sensor
+      workspace: fleet
+      name: Review an offline sensor
+      when: [{kind: presence, label: sensor_offline}]
+      lane: coordinate
+      level: review
+      soul: logic
+
+  roles:
+    - {principal: auditor@harbor.example, role: auditor, scope: main}
+
+  expectations:
+    - id: four-excursions-hold-the-pump
+      name: four excursions hold the pump
+      workspace: fleet
+      soul: logic
+      labels: {"chiller-thermal@1:over-temp": 4.0, thermal_stress: 4.0}
+      enforce: hold
+    - id: six-excursions-stop-it
+      name: six excursions stop it
+      workspace: fleet
+      soul: logic
+      labels: {"chiller-thermal@1:over-temp": 6.0, thermal_stress: 6.0}
+      enforce: block
+      coordinate: review
+      policies: [Block a pump under sustained thermal stress]
+    - id: one-excursion-is-only-recorded
+      name: one excursion is only recorded
+      workspace: fleet
+      soul: logic
+      labels: {"chiller-thermal@1:over-temp": 1.0, thermal_stress: 1.0}
+      enforce: none
+      coordinate: none

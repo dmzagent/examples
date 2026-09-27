@@ -1,0 +1,97 @@
+# Solution Manifest for Harbor Supply's own assistant on Ollama, governed by the SDK.
+#
+# The application (app/chat.py) sends every turn to the platform and checks the
+# assistant's circuit breaker before it runs a sensitive tool. This file
+# declares what the platform does with those turns: the vocabulary it tags them
+# with, and the rules that move the breaker or ask a person.
+#
+#   ./setup.sh [--var posture=observe]
+#
+apiVersion: dmzagent.com/v1
+kind: SolutionManifest
+metadata:
+  name: harbor-ollama-chatbot
+  vendor: ${DMZAGENT_VENDOR}
+  version: 1
+spec:
+  divisions:
+    - id: main
+      division_id: ${DMZAGENT_DIVISION_ID}
+      config:
+        reasoning_mode: per_frame
+        enforcement_posture: ${posture:-enforce}
+
+  corpora:
+    - id: assistant-corpus
+      # The OWASP LLM Top 10: injection, disclosure, output handling, excessive agency.
+      reasoning_canons: ["library/cn_owasp_llm_top10@latest"]
+
+  workspaces:
+    - id: assistant
+      workspace_id: ${DMZAGENT_WORKSPACE_ID}
+      division: main
+      engine: reasoning
+      corpus: assistant-corpus
+
+  circuit_breaker_policies:
+    - id: block-disclosure
+      workspace: assistant
+      name: Block on sensitive information disclosure
+      description: Disclosure is not recoverable once it has left, so this one blocks rather than holds.
+      rules: [{tag: rt_owasp_llm02_sensitive_information_disclosure_2025_v1, op: ">=", value: 0.5}]
+      action: block
+    - id: flag-injection
+      workspace: assistant
+      name: Flag suspected prompt injection
+      description: "Half-open: the assistant may still act, but every check says warning=True."
+      rules: [{tag: rt_owasp_llm01_prompt_injection_2025_v1, op: ">=", value: 0.5}]
+      action: review
+
+  policies:
+    - id: hold-strong-injection
+      workspace: assistant
+      name: Hold the assistant on strong prompt injection
+      description: A hold costs a review, not a failed request; a person releases it.
+      when: [{kind: strength, label: rt_owasp_llm01_prompt_injection_2025_v1, op: ">=", threshold: 0.75}]
+      lane: enforce
+      level: hold
+    - id: escalate-excessive-agency
+      workspace: assistant
+      name: Escalate excessive agency
+      description: An assistant exceeding its mandate is a scope problem for a person to fix.
+      when: [{kind: strength, label: rt_owasp_llm06_excessive_agency_2025_v1, op: ">=", threshold: 0.5}]
+      lane: coordinate
+      level: escalate
+    - id: record-output-handling
+      workspace: assistant
+      name: Record improper output handling
+      when: [{kind: presence, label: rt_owasp_llm05_improper_output_handling_2025_v1}]
+      lane: record
+    - id: review-escalation
+      workspace: assistant
+      name: Review an escalating conversation
+      when: [{kind: strength, label: rt_pattern_escalation_v1, op: ">=", threshold: 0.5}]
+      lane: coordinate
+      level: review
+
+  roles:
+    - {principal: auditor@harbor.example, role: auditor, scope: main}
+
+  expectations:
+    - id: disclosure-opens-the-breaker
+      name: disclosure opens the breaker
+      workspace: assistant
+      labels: {rt_owasp_llm02_sensitive_information_disclosure_2025_v1: 0.6}
+      enforce: block
+      policies: [Block on sensitive information disclosure]
+    - id: mild-injection-flags-strong-injection-holds
+      name: mild injection flags, strong injection holds
+      workspace: assistant
+      labels: {rt_owasp_llm01_prompt_injection_2025_v1: 0.8}
+      enforce: hold
+      policies: [Flag suspected prompt injection, Hold the assistant on strong prompt injection]
+    - id: excessive-agency-asks-a-person
+      name: excessive agency asks a person
+      workspace: assistant
+      labels: {rt_owasp_llm06_excessive_agency_2025_v1: 0.7}
+      coordinate: escalate

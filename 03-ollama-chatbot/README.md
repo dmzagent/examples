@@ -8,9 +8,11 @@ assistant's circuit breaker is checked. The page shows what the platform
 saw, what it tagged, and what it decided, next to the chat.
 
 ```
-governance.py    the OWASP LLM Top 10 vocabulary, breaker rules, response
-                 lanes, and the application key
-setup.sh         plan → apply → verify; installs the SDK
+solution.yaml    the Solution Manifest: the OWASP LLM Top 10 vocabulary,
+                 breaker rules, response lanes, the auditor role, the
+                 expectations
+setup.sh         validate → plan → apply → mint the application key →
+                 verify; installs the SDK
 app/chat.py      the assistant: Ollama for the model, the SDK for governance
 app/site/        the chat page with the "what the platform saw" panel
 ```
@@ -20,7 +22,8 @@ app/site/        the chat page with the "what the platform saw" panel
 ```bash
 ollama pull llama3.1                 # any tool-capable model; set OLLAMA_MODEL to use another
 export DMZAGENT_API_KEY=ck_...       # a tenant_admin key for the workspace
-./setup.sh                           # writes app/.env with an application key
+export DMZ_APPROVED_BY=reviewer      # who approved the change (maker-checker); in CI, the merger
+./setup.sh                           # applies the manifest, writes app/.env with an application key
 python3 app/chat.py                  # http://localhost:8001
 ```
 
@@ -45,18 +48,22 @@ python3 app/chat.py                  # http://localhost:8001
 
 `lookup_order` is not governed; it is still on the record.
 
-## What the governance declares
+## What the manifest declares
 
-| Declaration | Effect |
+| Section of `solution.yaml` | Effect |
 |---|---|
-| `require_canon("cn_owasp_llm_top10")` | the OWASP LLM Top 10 (2025) as tags: prompt injection, sensitive disclosure, excessive agency, improper output handling |
-| breaker `block` on sensitive information disclosure | disclosure is not recoverable, so it blocks rather than holds |
-| breaker `review` on suspected prompt injection | half-open: allowed, flagged on every check |
-| `enforce/hold` on strong prompt injection | a hold costs a review, not a failed request; a person releases it |
-| `coordinate/escalate` on excessive agency | a person is told; scope is a problem to fix, not a single action to stop |
-| `record` on improper output handling | written down, nothing interrupted: the posture to learn your rate on real traffic |
-| `coordinate/review` on escalation | core vocabulary; works before any Canon is installed |
-| `sdk_key(...)` | the application's analyst key |
+| `corpora[assistant-corpus].reasoning_canons` | the OWASP LLM Top 10 (2025) as tags: prompt injection, sensitive disclosure, excessive agency, improper output handling; installed by apply |
+| `circuit_breaker_policies`: `block` on sensitive information disclosure | disclosure is not recoverable, so it blocks rather than holds |
+| `circuit_breaker_policies`: `review` on suspected prompt injection | half-open: allowed, flagged on every check |
+| `policies`: `enforce/hold` on strong prompt injection | a hold costs a review, not a failed request; a person releases it |
+| `policies`: `coordinate/escalate` on excessive agency | a person is told; scope is a problem to fix, not a single action to stop |
+| `policies`: `record` on improper output handling | written down, nothing interrupted: the posture to learn your rate on real traffic |
+| `policies`: `coordinate/review` on escalation | core vocabulary; works before any Canon is installed |
+| `roles`: an auditor on the division | the segregation of duties the vendor guardrail requires |
+| `expectations` | disclosure blocks, strong injection holds, excessive agency escalates: checked by `dmz verify` |
+
+The application's key is minted by `setup.sh` (`dmz keys mint`, analyst
+role) and written to `app/.env`.
 
 The panel's two buttons hold and release the assistant as operator overrides
 recorded on the ledger. Hold it, ask for a refund, and watch the refusal

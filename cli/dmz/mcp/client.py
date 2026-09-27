@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
-from giaas.client import Platform, PlatformError  # noqa: F401  (re-exported for callers)
+from ..client import Platform, PlatformError  # noqa: F401  (re-exported for callers)
 
 # Tools whose handlers never write; the bridge marks them read-only for hosts.
 READ_ONLY_TOOLS = frozenset({

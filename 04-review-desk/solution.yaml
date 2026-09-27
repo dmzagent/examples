@@ -1,0 +1,116 @@
+# Solution Manifest for the desk that operates Harbor Supply's agents.
+#
+# Three agents act on the company's behalf: a payments agent that settles
+# supplier invoices, a records agent that exports customer data, a support
+# agent. This file declares how each kind of trouble is answered:
+#   * a hard stop for what cannot be undone (a personal-data leak);
+#   * a recoverable hold plus a review for what a person should look at
+#     (tool misuse), so an agent pauses instead of failing and an operator
+#     releases it from the desk;
+#   * an escalation for deception;
+#   * a remediation directive delivered to the company's own endpoint.
+# The posture is a variable so the same file runs in `observe` on a new
+# workspace and in `enforce` once the rate of holds is understood.
+#
+#   ./setup.sh [--var posture=observe] [--var remediation_url=https://…/hooks/remediate]
+#
+apiVersion: dmzagent.com/v1
+kind: SolutionManifest
+metadata:
+  name: harbor-review-desk
+  vendor: ${DMZAGENT_VENDOR}
+  version: 1
+spec:
+  divisions:
+    - id: main
+      division_id: ${DMZAGENT_DIVISION_ID}
+      config:
+        reasoning_mode: per_frame
+        enforcement_posture: ${posture:-enforce}
+
+  corpora:
+    - id: desk-corpus
+      # PII-leak, tool-misuse, scope-creep and deception tags on what the agents do
+      reasoning_canons: ["library/cn_seed_openai_agent_safety@latest"]
+
+  workspaces:
+    - id: desk
+      workspace_id: ${DMZAGENT_WORKSPACE_ID}
+      division: main
+      engine: reasoning
+      corpus: desk-corpus
+
+  circuit_breaker_policies:
+    - id: block-pii-leak
+      workspace: desk
+      name: Block on PII leak
+      description: Personal data that has left cannot be recalled; the breaker opens and stays open until an operator releases it.
+      rules: [{tag: rt_agent_pii_leak_v1, op: ">=", value: 0.5}]
+      action: block
+    - id: flag-scope-creep
+      workspace: desk
+      name: Flag scope creep
+      description: "Half-open: the agent keeps working, every check says warning=True, the desk shows it."
+      rules: [{tag: rt_agent_scope_creep_v1, op: ">=", value: 0.5}]
+      action: review
+
+  policies:
+    - id: hold-tool-misuse
+      workspace: desk
+      name: Hold on tool misuse
+      description: "A recoverable pause: guard() refuses, the desk shows why, an operator releases."
+      when: [{kind: strength, label: rt_agent_tool_misuse_v1, op: ">=", threshold: 0.5}]
+      lane: enforce
+      level: hold
+    - id: review-tool-misuse
+      workspace: desk
+      name: Review tool misuse
+      when: [{kind: strength, label: rt_agent_tool_misuse_v1, op: ">=", threshold: 0.5}]
+      lane: coordinate
+      level: review
+    - id: escalate-deception
+      workspace: desk
+      name: Escalate deception
+      when: [{kind: strength, label: rt_agent_deception_v1, op: ">=", threshold: 0.6}]
+      lane: coordinate
+      level: escalate
+    - id: remediate-pii-leak
+      workspace: desk
+      name: Remediate a PII leak
+      description: Tell the company's own systems to start the leak playbook.
+      when: [{kind: strength, label: rt_agent_pii_leak_v1, op: ">=", threshold: 0.5}]
+      lane: remediate
+      level: webhook
+      config:
+        delivery: {endpoint: "${remediation_url:-http://localhost:8002/hooks/remediate}", method: POST}
+
+  roles:
+    - {principal: auditor@harbor.example, role: auditor, scope: main}
+
+  expectations:
+    - id: a-leak-blocks-and-remediates
+      name: a leak blocks and remediates
+      workspace: desk
+      labels: {rt_agent_pii_leak_v1: 0.7}
+      enforce: block
+      remediate: webhook
+      policies: [Block on PII leak, Remediate a PII leak]
+    - id: tool-misuse-holds-and-asks
+      name: tool misuse holds and asks
+      workspace: desk
+      labels: {rt_agent_tool_misuse_v1: 0.6}
+      fired: [rt_agent_tool_misuse_v1]
+      enforce: hold
+      coordinate: review
+      policies: [Hold on tool misuse, Review tool misuse]
+    - id: scope-creep-only-flags
+      name: scope creep only flags
+      workspace: desk
+      labels: {rt_agent_scope_creep_v1: 0.6}
+      enforce: challenge
+      coordinate: none
+    - id: deception-escalates
+      name: deception escalates
+      workspace: desk
+      labels: {rt_agent_deception_v1: 0.8}
+      coordinate: escalate

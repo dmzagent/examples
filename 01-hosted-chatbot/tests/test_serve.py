@@ -121,7 +121,9 @@ class TestSiteServer(unittest.TestCase):
 
     def test_missing_configuration_is_named(self):
         self.assertEqual(sorted(serve.Config({}).missing()),
-                         ["CHATBOT_AGENT_SUBJECT_ID", "CHATBOT_EMBED_ID", "DMZAGENT_APP_KEY", "DMZAGENT_WORKSPACE_ID"])
+                         ["DMZAGENT_APP_KEY", "DMZAGENT_DIVISION_ID", "DMZAGENT_WORKSPACE_ID", "DMZ_CHATBOT_SUPPORT_BOT"])
+        cfg = serve.Config({"DMZAGENT_DIVISION_ID": "dv_1", "DMZ_CHATBOT_SUPPORT_BOT": "emb_42"})
+        self.assertEqual(cfg.agent_subject_id, "subject:dv_1:chat-agent:emb_42")
 
 
 if __name__ == "__main__":

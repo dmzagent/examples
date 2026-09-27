@@ -8,7 +8,7 @@ The API key is looked for in this order:
   3. a saved profile from ``dmz auth set`` in ``$XDG_CONFIG_HOME/dmz/credentials.json``.
 
 The base URL follows the same order, then defaults to the public endpoint.
-Nothing here prints a key; :func:`giaas.client.fingerprint` names one safely.
+Nothing here prints a key; :func:`dmz.client.fingerprint` names one safely.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from giaas.client import ConfigError, Platform, fingerprint  # noqa: F401
+from .client import ConfigError, Platform, fingerprint  # noqa: F401
 
 DEFAULT_BASE_URL = "https://api.dmzagent.com"
 KEY_VARS = ("DMZAGENT_API_KEY", "DMZAGENT_APP_KEY")

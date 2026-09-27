@@ -8,11 +8,13 @@ desk where a person sees why an agent was paused, decides, and releases it,
 with every transition anchored on the ledger.
 
 ```
-governance.py     what each kind of trouble does: a hard stop for a leak, a
-                  recoverable hold plus a review for tool misuse, a flag for
-                  scope creep, an escalation for deception, a remediation
-                  directive to the company's own endpoint; the posture ladder
-setup.sh          plan → apply → verify; installs the SDK
+solution.yaml     the Solution Manifest: what each kind of trouble does. A
+                  hard stop for a leak, a recoverable hold plus a review for
+                  tool misuse, a flag for scope creep, an escalation for
+                  deception, a remediation directive to the company's own
+                  endpoint; the posture ladder as a variable
+setup.sh          validate → plan → apply → mint the desk's key → verify;
+                  installs the SDK
 app/desk.py       the desk: subjects and breakers, the review queue,
                   decisions with anchors, remediation directives received
 app/simulate.py   the three agents' scripted traffic, through the SDK,
@@ -23,18 +25,26 @@ app/simulate.py   the three agents' scripted traffic, through the SDK,
 
 ```bash
 export DMZAGENT_API_KEY=ck_...           # a tenant_admin key for the workspace
+export DMZ_APPROVED_BY=reviewer          # who approved the change (maker-checker); in CI, the merger
 ./setup.sh --var posture=observe         # start by watching; decisions are recorded, nothing stops
 python3 app/desk.py                      # http://localhost:8002
 python3 app/simulate.py --loop 30        # in another terminal
 ```
 
 When the rate of holds on real traffic is understood, apply the same file
-in enforce posture. Nothing else changes; the plan shows one line:
+in enforce posture. Nothing else changes; the plan shows one line, and the
+Stack gains a version whose applier, approver and ledger anchor `dmz stack`
+lists:
 
 ```bash
 ./setup.sh --var posture=enforce
-#  ~ division_config  division   enforcement_posture: observe → enforce
+#  Plan: 0 to add, 1 to change, 0 to replace, 0 to remove, 9 unchanged
+#    ~ division                 main  config
 ```
+
+Through the GitOps workflow the same change is a pull request that edits
+the default in the file: the Change Set is posted on the PR, and the merge
+applies it with the author as maker and the merger as checker.
 
 ## What the desk shows
 
@@ -71,17 +81,23 @@ tool's result, so the ledger shows the action that did not happen and why.
 With reasoning running on the platform, the last two scripts are the ones
 that get tagged and held; with the desk you release them.
 
-## What the governance declares
+## What the manifest declares
 
-| Declaration | Effect |
+| Section of `solution.yaml` | Effect |
 |---|---|
-| `enforcement_posture` from `--var posture` | `observe` → `warn` → `enforce`: the ladder for turning enforcement on without surprises |
-| breaker `block` on PII leak | a hard stop: what has left cannot be recalled |
-| `enforce/hold` + `coordinate/review` on tool misuse | the pause a person can end, and the queue item that lets them |
-| breaker `review` on scope creep | half-open: flagged on every check, never stopped |
-| `coordinate/escalate` on deception | the people who own the agent are told |
-| `remediate/webhook` with a declared delivery target | the company's own playbook, driven by the platform |
-| `sdk_key(...)` | one analyst key for the desk and the simulator: reads, review actions, overrides, events; no policy edits |
+| `divisions[main].config.enforcement_posture: ${posture:-enforce}` | `observe` → `warn` → `enforce`: the ladder for turning enforcement on without surprises |
+| `corpora[desk-corpus].reasoning_canons` | the PII-leak, tool-misuse, scope-creep and deception vocabulary, installed by apply |
+| `circuit_breaker_policies`: `block` on PII leak | a hard stop: what has left cannot be recalled |
+| `policies`: `enforce/hold` + `coordinate/review` on tool misuse | the pause a person can end, and the queue item that lets them |
+| `circuit_breaker_policies`: `review` on scope creep | half-open: flagged on every check, never stopped |
+| `policies`: `coordinate/escalate` on deception | the people who own the agent are told |
+| `policies`: `remediate/webhook` with `config.delivery` | the company's own playbook, driven by the platform; `--var remediation_url=...` points it at a real endpoint |
+| `roles`: an auditor on the division | the segregation of duties the vendor guardrail requires |
+| `expectations` | a leak blocks and remediates, tool misuse holds and asks, scope creep only flags, deception escalates |
+
+One analyst key, minted by `setup.sh` with `dmz keys mint`, serves the desk
+and the simulator: reads, review actions, overrides, events; no policy
+edits.
 
 ## Honest limits
 
@@ -92,8 +108,8 @@ that get tagged and held; with the desk you release them.
 - `resolve` records the decision and feeds the soul; it does not move the
   breaker. `release` does. The desk shows both on the same row on purpose.
 - Webhook subscriptions (the platform-wide feed) are registered in the
-  console; the declared per-policy delivery target is what this file can
-  manage with a key.
+  console; the declared per-policy delivery target is what the manifest
+  manages.
 
 ## Tests
 

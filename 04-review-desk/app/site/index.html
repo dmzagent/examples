@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harbor Supply — operations desk</title>
+<style>
+  :root { --ink: #14181f; --muted: #5b6573; --line: #d9dee5; --paper: #fff; --wash: #f4f6f9; --ok: #1b7f4b; --warn: #b7791f; --hold: #9a4d00; --open: #b3261e; --accent: #0a2540; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--wash); }
+  header { background: var(--accent); color: #fff; padding: 14px 24px; display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; } header span { opacity: .85; font-size: 13px; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 20px 24px; max-width: 1380px; margin: 0 auto; }
+  @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; }
+  h2 { font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+  .chip { display: inline-block; padding: 2px 9px; border-radius: 999px; font-weight: 600; font-size: 12px; color: #fff; background: var(--muted); }
+  .chip.closed { background: var(--ok); } .chip.half_open { background: var(--warn); } .chip.hold { background: var(--hold); } .chip.open { background: var(--open); }
+  .chip.observe { background: #5b6573; } .chip.warn { background: var(--warn); } .chip.enforce { background: var(--ok); }
+  .muted { color: var(--muted); font-size: 13px; } .mono { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 12px; }
+  button { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: #fff; cursor: pointer; margin: 2px 2px 2px 0; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; } td, th { text-align: left; padding: 6px 4px; border-top: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; border-top: 0; } .wide { grid-column: 1 / -1; }
+  .notice { font-size: 13px; color: var(--muted); min-height: 1.2em; margin-top: 6px; }
+  .explain { background: #eef3fb; border-color: #cdd9ee; } .explain ol { margin: 6px 0 0; padding-left: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Harbor Supply · operations desk</h1>
+  <span>workspace <span class="mono">{{WORKSPACE_ID}}</span></span>
+  <span>posture <span id="posture" class="chip">…</span></span>
+  <span>reasoning <span id="mode" class="mono">…</span></span>
+</header>
+<main>
+  <section class="wide explain">
+    <h2>How this desk works</h2>
+    <ol>
+      <li>Run <span class="mono">python3 app/simulate.py --loop 30</span> in another terminal: three agents talk and act; one leaks personal data, one misuses a tool.</li>
+      <li>Reasoning tags what they did. The governance in <span class="mono">governance.py</span> turns tags into a <b>hold</b> (recoverable), an <b>open</b> breaker (a hard stop), a <b>review</b> for you, an <b>escalation</b>, or a remediation directive.</li>
+      <li>Claim a review, confirm or dismiss it (a dismissal weakens the tag on the subject's soul), and release the subject. Every transition below carries a ledger anchor.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Subjects and their breakers</h2>
+    <table><thead><tr><th>subject</th><th>state</th><th>why</th><th>since</th><th></th></tr></thead><tbody id="subjects"><tr><td colspan="5" class="muted">no breaker state yet — every subject starts closed (default-allow)</td></tr></tbody></table>
+    <div class="notice">Hold pauses an agent's sensitive actions until released; engage opens the breaker outright.</div>
+  </section>
+
+  <section>
+    <h2>Review queue <span id="review-count" class="muted"></span></h2>
+    <table><thead><tr><th>tag</th><th>subject</th><th>level</th><th>claimed</th><th></th></tr></thead><tbody id="reviews"><tr><td colspan="5" class="muted">empty</td></tr></tbody></table>
+    <div id="notice" class="notice"></div>
+  </section>
+
+  <section>
+    <h2>Breaker decisions, newest first</h2>
+    <table><thead><tr><th>when</th><th>subject</th><th>transition</th><th>why</th><th>anchor</th></tr></thead><tbody id="decisions"><tr><td colspan="5" class="muted">none yet</td></tr></tbody></table>
+  </section>
+
+  <section>
+    <h2>Remediation directives received</h2>
+    <table><thead><tr><th>when</th><th>event</th><th>directive</th></tr></thead><tbody id="deliveries"><tr><td colspan="3" class="muted">none — the platform delivers them here when the operator arms outbound delivery</td></tr></tbody></table>
+  </section>
+</main>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]; }); }
+  function when(iso) { return iso ? String(iso).replace('T', ' ').slice(5, 19) : ''; }
+  function short(subject) { var p = String(subject || '').split(':'); return p[p.length - 1] || subject; }
+  function post(url, body) { return fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); }); }
+  function act(url, body) { post(url, body).then(function (res) { $('notice').textContent = res.ok ? 'done' : 'failed: ' + JSON.stringify(res.body).slice(0, 160); refresh(); }); }
+
+  function render(s) {
+    $('posture').textContent = s.posture; $('posture').className = 'chip ' + s.posture; $('mode').textContent = s.reasoning_mode;
+    var subs = s.subjects || [];
+    $('subjects').innerHTML = subs.length ? subs.map(function (x) {
+      var fired = ((x.last_decision || {}).fired_policies || []).map(function (p) { return p.name || (p.manual ? 'manual: ' + (p.reason || '') : ''); }).join(', ');
+      return '<tr><td class="mono" title="' + esc(x.scope_ref) + '">' + esc(short(x.scope_ref)) + '</td><td><span class="chip ' + esc(x.state) + '">' + esc(String(x.state).replace('_', ' ')) + '</span></td>' +
+        '<td>' + esc(fired || x.reason) + '</td><td class="muted">' + when(x.updated_at) + '</td><td>' +
+        (x.state === 'closed' ? '<button data-sub="' + esc(x.scope_ref) + '" data-act="hold">hold</button><button data-sub="' + esc(x.scope_ref) + '" data-act="engage">engage</button>'
+                              : '<button class="primary" data-sub="' + esc(x.scope_ref) + '" data-act="release">release</button>') + '</td></tr>';
+    }).join('') : '<tr><td colspan="5" class="muted">no breaker state yet — every subject starts closed (default-allow)</td></tr>';
+
+    var reviews = s.reviews || []; $('review-count').textContent = reviews.length ? '(' + reviews.length + ')' : '';
+    $('reviews').innerHTML = reviews.length ? reviews.map(function (r) {
+      var id = esc(r.review_id);
+      return '<tr><td><b>' + esc(r.tag_id) + '</b><div class="muted">' + when(r.created_at) + (r.reinforced > 1 ? ' · fired ' + r.reinforced + '×' : '') + '</div></td>' +
+        '<td class="mono" title="' + esc(r.subject_id) + '">' + esc(short(r.subject_id)) + (r.cb_state ? ' <span class="chip ' + esc(r.cb_state) + '">' + esc(r.cb_state) + '</span>' : '') + '</td>' +
+        '<td>' + esc(r.level) + '</td><td class="muted">' + esc(r.claimed_by ? short(r.claimed_by) : '—') + '</td><td>' +
+        (r.claimed_by ? '' : '<button data-rev="' + id + '" data-act="claim">claim</button>') +
+        '<button data-rev="' + id + '" data-act="resolve" data-status="resolved">confirm</button>' +
+        '<button data-rev="' + id + '" data-act="resolve" data-status="dismissed">dismiss</button>' +
+        '<button data-rev="' + id + '" data-act="release">release subject</button>' +
+        '<button data-rev="' + id + '" data-act="escalate">escalate</button></td></tr>';
+    }).join('') : '<tr><td colspan="5" class="muted">empty</td></tr>';
+
+    var ds = s.decisions || [];
+    $('decisions').innerHTML = ds.length ? ds.map(function (d) {
+      var fired = (d.fired_policies || []).map(function (p) { return p.name || (p.manual ? 'manual: ' + (p.reason || '') : ''); }).join(', ');
+      return '<tr><td class="muted">' + when(d.created_at) + '</td><td class="mono">' + esc(short(d.scope_ref)) + '</td><td>' + esc(d.state_before) + ' → <b>' + esc(d.state_after) + '</b></td><td>' + esc(fired || d.reason) + '</td><td class="mono">' + esc((d.ledger_event_id || '').slice(0, 8)) + '</td></tr>';
+    }).join('') : '<tr><td colspan="5" class="muted">none yet</td></tr>';
+
+    var dl = s.deliveries || [];
+    $('deliveries').innerHTML = dl.length ? dl.map(function (x) { return '<tr><td class="muted">' + esc(x.at) + '</td><td>' + esc(x.event) + '</td><td class="mono">' + esc(JSON.stringify(x.directive).slice(0, 200)) + '</td></tr>'; }).join('')
+      : '<tr><td colspan="3" class="muted">none — the platform delivers them here when the operator arms outbound delivery</td></tr>';
+  }
+
+  document.body.addEventListener('click', function (ev) {
+    var b = ev.target.closest('button[data-act]'); if (!b) { return; }
+    if (b.dataset.sub) {
+      var reason = window.prompt('Reason (recorded on the ledger):', b.dataset.act + ' from the desk'); if (reason === null) { return; }
+      act('/api/subjects/' + b.dataset.act, { subject_id: b.dataset.sub, reason: reason });
+    } else if (b.dataset.rev) {
+      act('/api/reviews/' + encodeURIComponent(b.dataset.rev) + '/' + b.dataset.act, { status: b.dataset.status, decision: 'decided at the desk', reason: b.dataset.act + ' from the desk' });
+    }
+  });
+  function refresh() { fetch('/api/desk').then(function (r) { return r.json(); }).then(render).catch(function (e) { $('notice').textContent = 'desk unavailable: ' + e; }); }
+  refresh(); setInterval(refresh, 4000);
+})();
+</script>
+</body>
+</html>

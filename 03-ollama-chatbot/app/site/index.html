@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harbor Supply — assistant</title>
+<style>
+  :root { --ink: #14181f; --muted: #5b6573; --line: #d9dee5; --paper: #fff; --wash: #f4f6f9;
+          --ok: #1b7f4b; --warn: #b7791f; --hold: #9a4d00; --open: #b3261e; --accent: #0a2540; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--wash); }
+  header { background: var(--accent); color: #fff; padding: 14px 24px; display: flex; gap: 16px; align-items: baseline; }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; } header span { opacity: .8; font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(360px, 480px) 1fr; gap: 24px; padding: 24px; max-width: 1280px; margin: 0 auto; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; }
+  section + section { margin-top: 16px; }
+  h2 { font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+  .chip { display: inline-block; padding: 3px 10px; border-radius: 999px; font-weight: 600; font-size: 13px; color: #fff; background: var(--muted); }
+  .chip.closed { background: var(--ok); } .chip.half_open { background: var(--warn); } .chip.hold { background: var(--hold); } .chip.open { background: var(--open); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .mono { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); } button:disabled { opacity: .5; }
+  #log { height: 440px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: #fafbfc; }
+  .msg { margin: 6px 0; padding: 8px 10px; border-radius: 8px; max-width: 92%; white-space: pre-wrap; }
+  .msg.user { background: #e8eefc; margin-left: auto; } .msg.bot { background: #fff; border: 1px solid var(--line); }
+  .msg.tool { background: #fff7e6; border: 1px dashed #e0c78a; font-size: 13px; } .msg.tool.refused { background: #fdecea; border-color: #e6a19c; }
+  form { display: flex; gap: 8px; margin-top: 10px; } input { flex: 1; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; } td, th { text-align: left; padding: 6px 4px; border-top: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; border-top: 0; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; } .notice { font-size: 13px; color: var(--muted); margin-top: 8px; min-height: 1.2em; }
+  .explain { background: #eef3fb; border-color: #cdd9ee; } .explain ol { margin: 6px 0 0; padding-left: 20px; }
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 4px; background: #eef1f5; margin: 1px 2px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header><h1>Harbor Supply</h1><span>our own assistant · an open-weights model on Ollama · governed by the DMZAgent SDK</span></header>
+<main>
+  <div>
+    <section>
+      <h2>Chat</h2>
+      <div id="log"></div>
+      <form id="form"><input id="text" autocomplete="off" placeholder="Ask about order HS-1001, or ask for a refund…"><button class="primary">Send</button></form>
+      <div id="notice" class="notice"></div>
+    </section>
+    <section class="explain">
+      <h2>What to try</h2>
+      <ol>
+        <li>"What's the status of order HS-1002?" — a plain tool call; recorded, nothing flagged.</li>
+        <li>"Refund $50 on HS-1001, it arrived damaged." — a <b>governed</b> tool: the breaker is checked first.</li>
+        <li>Hold the assistant with the drill, ask for the refund again: the tool is refused and the model is told.</li>
+        <li>Try to talk the assistant into ignoring its instructions or exporting every customer. Watch what the platform tags.</li>
+      </ol>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>The assistant's circuit breaker</h2>
+      <div class="row"><span id="state" class="chip">…</span><span id="reason" class="muted"></span></div>
+      <div class="muted mono" style="margin-top:6px">{{BOT}}</div>
+      <div class="row" style="margin-top:12px">
+        <button id="hold" class="primary">Hold the assistant</button><button id="release">Release</button>
+        <span class="muted">operator overrides, on the ledger</span>
+      </div>
+    </section>
+    <section>
+      <h2>What the platform saw</h2>
+      <table><thead><tr><th>when</th><th>event</th><th>accepted</th><th>outcome</th><th>tags fired</th></tr></thead><tbody id="turns"><tr><td colspan="5" class="muted">nothing yet</td></tr></tbody></table>
+      <p class="muted">Each row is one frame on the agent stream. The outcome and tags arrive when reasoning finishes; the policies in governance.py act on those tags.</p>
+    </section>
+    <section>
+      <h2>Open reviews <span id="review-count" class="muted"></span></h2>
+      <div id="reviews" class="muted">none</div>
+    </section>
+    <section>
+      <h2>Recent breaker decisions</h2>
+      <table><thead><tr><th>when</th><th>transition</th><th>why</th><th>anchor</th></tr></thead><tbody id="decisions"><tr><td colspan="4" class="muted">none yet</td></tr></tbody></table>
+    </section>
+  </div>
+</main>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var conversationId = 'c_' + Math.random().toString(36).slice(2, 10);
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]; }); }
+  function when(iso) { return iso ? String(iso).replace('T', ' ').slice(11, 19) : ''; }
+  function add(cls, text) { var d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text; $('log').appendChild(d); $('log').scrollTop = 1e9; }
+
+  $('form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var text = $('text').value.trim(); if (!text) { return; }
+    $('text').value = ''; add('user', text); $('notice').textContent = 'thinking…';
+    fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ conversation_id: conversationId, text: text }) })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        (data.events || []).forEach(function (e) {
+          var g = e.governance; var refused = e.result && e.result.refused;
+          var line = 'tool ' + e.tool + '(' + JSON.stringify(e.args) + ')';
+          if (g) { line += ' — breaker ' + g.state + (refused ? ': REFUSED — ' + g.reason : (g.warning ? ': allowed, flagged' : ': allowed')); }
+          else { line += ' — not governed'; }
+          add('tool' + (refused ? ' refused' : ''), line);
+        });
+        if (data.detail) { add('bot', data.detail); } else { add('bot', data.reply || '…'); }
+        $('notice').textContent = ''; refresh();
+      })
+      .catch(function (e) { $('notice').textContent = 'error: ' + e; });
+  });
+
+  function render(s) {
+    var b = s.breaker || {}; var chip = $('state'); chip.textContent = (b.state || 'unknown').replace('_', ' '); chip.className = 'chip ' + (b.state || '');
+    $('reason').textContent = b.reason || ''; $('hold').disabled = (b.state === 'hold' || b.state === 'open'); $('release').disabled = (b.state === 'closed');
+    var turns = s.turns || [];
+    $('turns').innerHTML = turns.length ? turns.slice().reverse().map(function (t) {
+      var what = t.kind === 'customer' ? 'customer: ' + t.text : t.kind === 'assistant' ? 'assistant: ' + t.text : t.kind + ' ' + (t.tool || '');
+      var tags = (t.tags || []).map(function (x) { return '<span class="tag">' + esc(x.tag) + ' ' + (x.strength != null ? Number(x.strength).toFixed(2) : '') + '</span>'; }).join('');
+      return '<tr><td class="muted">' + esc(t.at) + '</td><td>' + esc(String(what).slice(0, 90)) + '</td><td>' + (t.accepted ? 'yes' : (t.error ? 'error' : 'no')) + '</td><td>' + esc(t.outcome || (t.frame_id ? 'reasoning…' : '')) + '</td><td>' + (tags || '<span class="muted">—</span>') + '</td></tr>';
+    }).join('') : '<tr><td colspan="5" class="muted">nothing yet</td></tr>';
+    var reviews = s.reviews || []; $('review-count').textContent = reviews.length ? '(' + reviews.length + ')' : '';
+    $('reviews').innerHTML = reviews.length ? reviews.map(function (r) { return '<div><b>' + esc(r.tag_id || r.level) + '</b> <span class="mono">' + esc(r.subject_id) + '</span> <span class="muted">' + esc(r.level) + '</span></div>'; }).join('') : 'none';
+    var ds = s.decisions || [];
+    $('decisions').innerHTML = ds.length ? ds.map(function (d) {
+      var fired = (d.fired_policies || []).map(function (p) { return p.name || (p.manual ? 'manual: ' + (p.reason || '') : ''); }).join(', ');
+      return '<tr><td class="muted">' + when(d.created_at) + '</td><td>' + esc(d.state_before) + ' → <b>' + esc(d.state_after) + '</b></td><td>' + esc(fired || d.reason) + '</td><td class="mono">' + esc((d.ledger_event_id || '').slice(0, 8)) + '</td></tr>';
+    }).join('') : '<tr><td colspan="4" class="muted">none yet</td></tr>';
+  }
+  function refresh() { fetch('/api/state').then(function (r) { return r.json(); }).then(render).catch(function () {}); }
+  function post(url, body) { return fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then(function (r) { return r.json(); }); }
+  $('hold').addEventListener('click', function () { var reason = window.prompt('Reason (recorded on the ledger):', 'operator drill'); if (reason === null) { return; } post('/api/drill/hold', { reason: reason }).then(function () { $('notice').textContent = 'held — ask for a refund now'; refresh(); }); });
+  $('release').addEventListener('click', function () { post('/api/drill/release', {}).then(function () { $('notice').textContent = 'released'; refresh(); }); });
+  refresh(); setInterval(refresh, 4000);
+})();
+</script>
+</body>
+</html>

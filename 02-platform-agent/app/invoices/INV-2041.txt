@@ -1,0 +1,5 @@
+Supplier: Tidewater Rope & Rigging
+Invoice: INV-2041
+PO: PO-7781
+Items: 40 m double-braid dock line, 12 stainless thimbles
+Total: $412.50

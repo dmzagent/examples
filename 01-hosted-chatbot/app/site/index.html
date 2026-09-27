@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harbor Supply — support</title>
+<style>
+  :root { --ink: #14181f; --muted: #5b6573; --line: #d9dee5; --paper: #ffffff; --wash: #f4f6f9;
+          --ok: #1b7f4b; --warn: #b7791f; --hold: #9a4d00; --open: #b3261e; --accent: #0a2540; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+         color: var(--ink); background: var(--wash); }
+  header { background: var(--accent); color: #fff; padding: 14px 24px; display: flex; gap: 16px;
+           align-items: baseline; }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header span { opacity: .8; font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(340px, 420px) 1fr; gap: 24px; padding: 24px;
+         max-width: 1240px; margin: 0 auto; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; }
+  section + section { margin-top: 16px; }
+  h2 { font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+  .chip { display: inline-block; padding: 3px 10px; border-radius: 999px; font-weight: 600; font-size: 13px;
+          color: #fff; background: var(--muted); }
+  .chip.closed { background: var(--ok); } .chip.half_open { background: var(--warn); }
+  .chip.hold { background: var(--hold); } .chip.open { background: var(--open); }
+  .muted { color: var(--muted); font-size: 13px; }
+  code, .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: #fff;
+           cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  ul { margin: 0; padding-left: 18px; } li { margin: 4px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { text-align: left; padding: 6px 4px; border-top: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; border-top: 0; }
+  .explain { background: #eef3fb; border-color: #cdd9ee; }
+  .explain ol { margin: 6px 0 0; padding-left: 20px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .notice { font-size: 13px; color: var(--muted); margin-top: 8px; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<header><h1>Harbor Supply</h1><span>Marine hardware since 1978 · support chat</span></header>
+<main>
+  <div>
+    <section>
+      <h2>Talk to {{AGENT_NAME}}</h2>
+      <p class="muted">This widget is served by the platform. Every turn is ingested through its reasoning
+        pipeline, and the agent's circuit breaker is checked before it replies.</p>
+      <div id="dmzagent-chat-{{EMBED_ID}}"></div>
+      <script async src="{{EMBED_SCRIPT_URL}}"
+        data-agent-id="{{EMBED_ID}}"
+        data-division-id="{{DIVISION_ID}}"
+        data-workspace-id="{{WORKSPACE_ID}}"
+        data-endpoint="{{EMBED_CHAT_URL}}"
+        data-mode="inline"
+        data-width="380"
+        data-height="520"
+        data-primary-color="#0a2540"
+        data-primary-text-color="#ffffff"
+        data-secondary-color="#f0f4ff"
+        data-secondary-text-color="#14181f"></script>
+    </section>
+    <section class="explain">
+      <h2>What to try</h2>
+      <ol>
+        <li>Ask about an order. The breaker stays <b>closed</b>; nothing is flagged.</li>
+        <li>Push the agent to do something outside support, or to repeat a card number back to you.
+          When reasoning tags the reply, the policies on the right move the breaker.</li>
+        <li>Use the drill to hold the agent yourself: the widget answers with a pause message
+          until you release it. Every transition is anchored on the ledger.</li>
+      </ol>
+    </section>
+  </div>
+
+  <div>
+    <section>
+      <h2>The agent's circuit breaker</h2>
+      <div class="row">
+        <span id="state" class="chip">…</span>
+        <span id="reason" class="muted"></span>
+      </div>
+      <div class="muted mono" style="margin-top:6px">subject {{AGENT_SUBJECT_ID}}</div>
+      <div class="row" style="margin-top:12px">
+        <button id="hold" class="primary">Hold the agent</button>
+        <button id="release">Release</button>
+        <span class="muted">operator overrides, recorded on the ledger with your reason</span>
+      </div>
+      <div id="notice" class="notice"></div>
+    </section>
+
+    <section>
+      <h2>Open reviews <span id="review-count" class="muted"></span></h2>
+      <div id="reviews" class="muted">none</div>
+    </section>
+
+    <section>
+      <h2>Recent breaker decisions</h2>
+      <table><thead><tr><th>when</th><th>transition</th><th>why</th><th>anchor</th></tr></thead>
+        <tbody id="decisions"><tr><td colspan="4" class="muted">none yet</td></tr></tbody></table>
+    </section>
+
+    <section>
+      <h2>Policies in force</h2>
+      <table><thead><tr><th>kind</th><th>name</th><th>when</th><th>then</th></tr></thead>
+        <tbody id="policies"></tbody></table>
+    </section>
+  </div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var lastState = null;
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]; }); }
+  function when(iso) { return iso ? String(iso).replace('T', ' ').slice(0, 19) : ''; }
+
+  function render(snap) {
+    var b = snap.breaker || {};
+    var state = b.state || 'unknown';
+    var chip = $('state'); chip.textContent = state.replace('_', ' '); chip.className = 'chip ' + state;
+    $('reason').textContent = b.reason || (b.exists === false ? 'no cached state (default-allow)' : '');
+    $('hold').disabled = (state === 'hold' || state === 'open');
+    $('release').disabled = (state === 'closed');
+    if (lastState && lastState !== state) {
+      $('notice').textContent = 'breaker moved ' + lastState + ' → ' + state;
+    }
+    lastState = state;
+
+    var reviews = snap.reviews || [];
+    $('review-count').textContent = reviews.length ? '(' + reviews.length + ')' : '';
+    if (!reviews.length) { $('reviews').innerHTML = 'none'; }
+    else {
+      $('reviews').innerHTML = reviews.map(function (r) {
+        return '<div class="row" style="margin:6px 0">' +
+          '<b>' + esc(r.tag_id || r.level) + '</b> <span class="mono">' + esc(r.subject_id) + '</span>' +
+          '<span class="muted">' + esc(r.level) + ' · ' + when(r.created_at) + '</span>' +
+          '<button data-review="' + esc(r.review_id) + '" data-status="resolved">confirm</button>' +
+          '<button data-review="' + esc(r.review_id) + '" data-status="dismissed">dismiss</button></div>';
+      }).join('');
+    }
+
+    var decisions = snap.decisions || [];
+    $('decisions').innerHTML = decisions.length ? decisions.map(function (d) {
+      var fired = (d.fired_policies || []).map(function (p) { return p.name || (p.manual ? 'manual: ' + (p.reason || '') : ''); }).join(', ');
+      return '<tr><td class="muted">' + when(d.created_at) + '</td><td>' + esc(d.state_before) + ' → <b>' + esc(d.state_after) + '</b></td>' +
+        '<td>' + esc(fired || d.reason) + '</td><td class="mono">' + esc((d.ledger_event_id || '').slice(0, 8)) + '</td></tr>';
+    }).join('') : '<tr><td colspan="4" class="muted">none yet</td></tr>';
+
+    var rows = (snap.breaker_policies || []).map(function (p) {
+      var rules = (p.rules || []).map(function (r) { return r.tag + ' ' + r.op + ' ' + r.value; }).join(' and ');
+      return '<tr><td>breaker</td><td>' + esc(p.name) + '</td><td class="mono">' + esc(rules) + '</td><td>' + esc(p.action) + '</td></tr>';
+    }).concat((snap.policies || []).map(function (p) {
+      var cond = (p.conditions || []).map(function (c) {
+        return c.kind === 'presence' ? c.label + ' present' : c.label + ' ' + (c.op || '>=') + ' ' + c.threshold; }).join(' and ');
+      return '<tr><td>' + esc(p.lane) + '</td><td>' + esc(p.name) + '</td><td class="mono">' + esc(cond) + '</td><td>' + esc(p.level || 'record') + '</td></tr>';
+    }));
+    $('policies').innerHTML = rows.join('') || '<tr><td colspan="4" class="muted">none declared</td></tr>';
+  }
+
+  function refresh() {
+    fetch('/api/governance').then(function (r) { return r.json(); }).then(render)
+      .catch(function (e) { $('notice').textContent = 'panel unavailable: ' + e; });
+  }
+
+  function post(url, body) {
+    return fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); });
+  }
+
+  $('hold').addEventListener('click', function () {
+    var reason = window.prompt('Reason for holding the agent (recorded on the ledger):', 'operator drill');
+    if (reason === null) { return; }
+    post('/api/drill/hold', { reason: reason }).then(function (res) {
+      $('notice').textContent = res.ok ? 'held — try the widget now' : 'hold failed: ' + JSON.stringify(res.body);
+      refresh();
+    });
+  });
+  $('release').addEventListener('click', function () {
+    post('/api/drill/release', { reason: 'released from the demo panel' }).then(function (res) {
+      $('notice').textContent = res.ok ? 'released' : 'release failed: ' + JSON.stringify(res.body);
+      refresh();
+    });
+  });
+  $('reviews').addEventListener('click', function (ev) {
+    var btn = ev.target.closest('button[data-review]');
+    if (!btn) { return; }
+    post('/api/reviews/' + encodeURIComponent(btn.getAttribute('data-review')) + '/resolve',
+         { status: btn.getAttribute('data-status'), decision: 'decided from the demo panel' })
+      .then(function (res) { $('notice').textContent = res.ok ? 'review ' + btn.getAttribute('data-status') : 'failed: ' + JSON.stringify(res.body); refresh(); });
+  });
+
+  refresh();
+  setInterval(refresh, 3000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# Written by setup.sh / giaas apply: keys and platform ids for one workspace.
+.env
+**/.env
+.giaas/
+**/.giaas/
+**/app/.agent.json
+__pycache__/
+*.pyc

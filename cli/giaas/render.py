@@ -8,9 +8,12 @@ from .engine import Change, Ctx
 from .resources import Governance
 
 
+PROG = "giaas"   # the command line in use; `dmz` sets its own name
+
+
 def header(gov: Governance, ctx: Ctx, verb: str) -> str:
     from .client import fingerprint
-    return (f"giaas {verb} · {gov.name}\n"
+    return (f"{PROG} {verb} · {gov.name}\n"
             f"workspace {ctx.workspace_id} · division {ctx.division_id} · "
             f"role {ctx.role} · key {fingerprint(ctx.platform.api_key)} · {ctx.platform.base_url}")
 
@@ -46,7 +49,7 @@ def text(gov: Governance, ctx: Ctx, changes: list[Change], *, verb: str, applied
 
 
 def markdown(gov: Governance, ctx: Ctx, changes: list[Change]) -> str:
-    lines = [f"### giaas plan · `{gov.name}`",
+    lines = [f"### {PROG} plan · `{gov.name}`",
              f"workspace `{ctx.workspace_id}` · division `{ctx.division_id}` · base `{ctx.platform.base_url}`",
              "", "| | kind | name | change |", "|---|---|---|---|"]
     for c in changes:

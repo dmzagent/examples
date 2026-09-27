@@ -6,13 +6,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 : "${DMZAGENT_API_KEY:?set DMZAGENT_API_KEY to a tenant_admin API key for the logic workspace}"
-export PYTHONPATH="$PWD/../giaas${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PWD/../cli${PYTHONPATH:+:$PYTHONPATH}"
+dmz="python3 -m dmz"          # the same as `dmz` once `pip install ../cli` has run
 
-python3 -m giaas plan governance.py "$@"
+$dmz plan governance.py "$@"
 echo
-python3 -m giaas apply governance.py --env-file app/.env "$@"
+$dmz apply governance.py --write-env app/.env "$@"
 echo
-python3 -m giaas verify governance.py "$@" || echo "verify reported problems (see above)"
+$dmz verify governance.py "$@" || echo "verify reported problems (see above)"
 echo
 echo "Installing the dmzagent SDK for the controller's breaker checks…"
 python3 -m pip install --quiet -r requirements.txt

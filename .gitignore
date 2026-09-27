@@ -6,3 +6,5 @@
 **/app/.agent.json
 __pycache__/
 *.pyc
+build/
+*.egg-info/

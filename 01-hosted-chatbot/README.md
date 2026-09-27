@@ -70,7 +70,7 @@ the reason you type.
 | `coordinate/review` on escalation | a core-vocabulary tag, so this works before any Canon is installed |
 | `chatbot(...)` | the hosted agent: name, site origin lock, system prompt, the protected action it must not perform itself |
 | `sdk_key(...)` | an analyst-role key for `serve.py`; it reads state and can hold/release, never edit policy |
-| `expect(...)` | policy tests run by the platform's evaluator in `giaas verify` |
+| `expect(...)` | policy tests run by the platform's evaluator in `dmz verify` |
 
 The breaker policies evaluate the **agent's** soul: the platform ingests the
 bot's replies as the agent's own utterances, so a reply that leaks a card

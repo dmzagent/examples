@@ -8,9 +8,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from giaas.client import ConfigError, PlatformError
-
+from .. import manifest as MF
 from .. import ui
+from ..client import ConfigError, PlatformError
 from ..mcp.client import McpClient, McpError
 
 OK, WARN, FAIL = "ok", "warn", "fail"
@@ -22,8 +22,8 @@ def register(sub, formatter) -> None:
                        description="Runs the checks an example needs before it can run and says what "
                                    "to do about each one that fails. Safe to run any time; it writes nothing.")
     p.add_argument("--ollama", metavar="URL", help="also check an Ollama server (default: $OLLAMA_URL if set)")
-    p.add_argument("--governance", metavar="FILE", default=None,
-                   help="also load this governance file (default: ./governance.py if present)")
+    p.add_argument("--manifest", metavar="FILE", default=None,
+                   help="also validate this Solution Manifest (default: ./solution.yaml if present)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.set_defaults(func=doctor)
 
@@ -94,7 +94,17 @@ def doctor(args, ctx_factory) -> int:
                     "or cn_owasp_llm_top10 (console: Library)")
         except (McpError, PlatformError, ConfigError) as exc:
             add(WARN, "canons", f"could not read the canon list: {exc}")
-        # 7. MCP server
+        # 7. The Solution Manifest surface
+        try:
+            rows = MF.stacks(ctx)
+            add(OK, "manifests", f"{ctx.base_url} exposes the Solution Manifest surface; {len(rows)} stack(s) in this vendor")
+        except PlatformError as exc:
+            if exc.status == 404:
+                add(FAIL, "manifests", "this platform does not expose /v1/manifests and /v1/stacks",
+                    "the deployment needs the Solution Manifest routes; `dmz validate|plan|apply` cannot run against it")
+            else:
+                add(WARN, "manifests", str(exc))
+        # 8. MCP server
         try:
             mcp.initialize()
             tools = mcp.tools()
@@ -108,7 +118,7 @@ def doctor(args, ctx_factory) -> int:
         except (McpError, PlatformError, ConfigError) as exc:
             add(FAIL, "mcp server", str(exc), "the key may lack the mcp scope; mint one without scope limits")
 
-    # 8. Ollama, when asked or configured
+    # 9. Ollama, when asked or configured
     ollama = args.ollama or os.environ.get("OLLAMA_URL") or ctx.env.get("OLLAMA_URL")
     if ollama:
         try:
@@ -119,18 +129,19 @@ def doctor(args, ctx_factory) -> int:
         except (urllib.error.URLError, ValueError, OSError) as exc:
             add(FAIL, "ollama", f"{ollama}: {exc}", "start Ollama (`ollama serve`) or set OLLAMA_URL")
 
-    # 9. A governance file
-    gov_path = Path(args.governance) if args.governance else Path("governance.py")
-    if gov_path.exists():
+    # 10. A manifest here
+    manifest_path = Path(args.manifest) if args.manifest else next(
+        (Path(n) for n in MF.DEFAULT_FILES if Path(n).exists()), None)
+    if manifest_path and manifest_path.exists() and who:
         try:
-            from giaas.cli import load_governance
-            gov = load_governance(gov_path.resolve())
-            kinds = {}
-            for r in gov.resources:
-                kinds[r.kind] = kinds.get(r.kind, 0) + 1
-            add(OK, "governance", f"{gov_path}: {gov.name}, " + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items())))
-        except Exception as exc:  # a broken file is the finding
-            add(FAIL, "governance", f"{gov_path} does not load: {exc}")
+            result = MF.validate(ctx, MF.load(ctx, manifest_path, {}))
+            if result.get("ok"):
+                add(OK, "manifest", f"{manifest_path}: valid, {len(result.get('resources') or [])} resources"
+                    + (f"; guardrails: {'; '.join(result['guardrails'])}" if result.get("guardrails") else ""))
+            else:
+                add(FAIL, "manifest", f"{manifest_path}: " + "; ".join(result.get("issues") or []))
+        except (PlatformError, ConfigError) as exc:
+            add(WARN, "manifest", f"{manifest_path}: could not be validated: {exc}")
 
     if args.json:
         ui.print_json(results)

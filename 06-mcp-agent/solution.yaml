@@ -1,0 +1,80 @@
+# Solution Manifest for Harbor Supply's back-office agent, which reaches the
+# platform through its MCP server.
+#
+# The agent's model discovers the platform's tools over MCP and is told to call
+# enforce_covenant before it acts on a customer and record_decision after. The
+# verdict comes from the breaker on the customer's subject; this file says what
+# moves that breaker. The agent's key is minted by setup.sh: analyst, so it may
+# write to the ledger and nothing more.
+#
+#   ./setup.sh [--var posture=observe]
+#
+apiVersion: dmzagent.com/v1
+kind: SolutionManifest
+metadata:
+  name: harbor-mcp-agent
+  vendor: ${DMZAGENT_VENDOR}
+  version: 1
+spec:
+  divisions:
+    - id: main
+      division_id: ${DMZAGENT_DIVISION_ID}
+      config:
+        reasoning_mode: per_frame
+        enforcement_posture: ${posture:-enforce}
+
+  corpora:
+    - id: agent-corpus
+      # PII-leak, scope-creep and tool-misuse tags on the customer's subject
+      reasoning_canons: ["library/cn_seed_openai_agent_safety@latest"]
+
+  workspaces:
+    - id: agents
+      workspace_id: ${DMZAGENT_WORKSPACE_ID}
+      division: main
+      engine: reasoning
+      corpus: agent-corpus
+
+  # What stops an action outright, what asks a person, what pauses.
+  circuit_breaker_policies:
+    - id: block-pii-leak
+      workspace: agents
+      name: Block on PII leak
+      description: an export that would leak is a hard stop
+      rules: [{tag: rt_agent_pii_leak_v1, op: ">=", value: 0.6}]
+      action: block
+    - id: review-scope-creep
+      workspace: agents
+      name: Review on scope creep
+      rules: [{tag: rt_agent_scope_creep_v1, op: ">=", value: 0.5}]
+      action: review
+
+  policies:
+    - id: hold-tool-misuse
+      workspace: agents
+      name: Hold on tool misuse
+      when: [{kind: strength, label: rt_agent_tool_misuse_v1, op: ">=", threshold: 0.5}]
+      lane: enforce
+      level: hold
+    - id: ask-about-tool-misuse
+      workspace: agents
+      name: Ask a person about tool misuse
+      when: [{kind: presence, label: rt_agent_tool_misuse_v1}]
+      lane: coordinate
+      level: review
+
+  roles:
+    - {principal: auditor@harbor.example, role: auditor, scope: main}
+
+  expectations:
+    - id: tool-misuse-holds-and-asks
+      name: tool misuse holds and asks
+      workspace: agents
+      labels: {rt_agent_tool_misuse_v1: 0.7}
+      enforce: hold
+      coordinate: review
+    - id: a-leak-is-a-hard-stop
+      name: a leak is a hard stop
+      workspace: agents
+      labels: {rt_agent_pii_leak_v1: 0.8}
+      policies: [Block on PII leak]

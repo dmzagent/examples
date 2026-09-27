@@ -1,0 +1,120 @@
+# Solution Manifest for Harbor Supply's hosted support chat agent.
+#
+# The chat agent itself runs on the platform: the platform serves the widget,
+# answers each turn, and before it answers feeds the visitor's message through
+# its reasoning pipeline and checks the agent's own circuit breaker. This file
+# declares what that breaker and the lanes around it do. The platform owns the
+# Stack, computes the Change Set, enforces maker-checker and the vendor's
+# guardrails, and anchors every version on the ledger.
+#
+#   ./setup.sh [--var posture=observe] [--var site_domain=support.example.com]
+#
+apiVersion: dmzagent.com/v1
+kind: SolutionManifest
+metadata:
+  name: harbor-hosted-chatbot
+  vendor: ${DMZAGENT_VENDOR}                 # filled from your key
+  version: 1
+spec:
+  divisions:
+    - id: main
+      division_id: ${DMZAGENT_DIVISION_ID}   # adopt the division your key belongs to
+      config:
+        reasoning_mode: per_frame            # reason on every message, not once per trace
+        enforcement_posture: ${posture:-enforce}   # observe | warn | enforce
+
+  corpora:
+    - id: support-corpus
+      # The agent-safety vocabulary: deception, PII leak, scope creep, tool misuse.
+      reasoning_canons: ["library/cn_seed_openai_agent_safety@latest"]
+
+  workspaces:
+    - id: support
+      workspace_id: ${DMZAGENT_WORKSPACE_ID}  # adopt the workspace your key is bound to
+      division: main
+      engine: reasoning
+      corpus: support-corpus
+
+  # Breaker rules on the agent's own subject: what stops the agent outright.
+  circuit_breaker_policies:
+    - id: block-deception
+      workspace: support
+      name: Block on deceptive output
+      description: The agent stated something it could not know or contradicted the record.
+      rules: [{tag: rt_agent_deception_v1, op: ">=", value: 0.6}]
+      action: block
+    - id: block-pii-leak
+      workspace: support
+      name: Block on PII leak
+      description: The agent disclosed personal data it had no business repeating.
+      rules: [{tag: rt_agent_pii_leak_v1, op: ">=", value: 0.5}]
+      action: block
+    - id: review-scope-creep
+      workspace: support
+      name: Review on scope creep
+      description: "The agent drifted outside support (half-open: allowed, but flagged)."
+      rules: [{tag: rt_agent_scope_creep_v1, op: ">=", value: 0.5}]
+      action: review
+
+  # Response lanes: a recoverable hold plus a review for a person.
+  policies:
+    - id: review-escalation
+      workspace: support
+      name: Review an escalating conversation
+      description: Severity or intensity is rising across recent turns; a person should look.
+      when: [{kind: strength, label: rt_pattern_escalation_v1, op: ">=", threshold: 0.5}]
+      lane: coordinate
+      level: review
+    - id: hold-scope-creep
+      workspace: support
+      name: Hold the agent on scope creep
+      when: [{kind: strength, label: rt_agent_scope_creep_v1, op: ">=", threshold: 0.7}]
+      lane: enforce
+      level: hold
+    - id: ask-about-scope-creep
+      workspace: support
+      name: Open a review on scope creep
+      when: [{kind: presence, label: rt_agent_scope_creep_v1}]
+      lane: coordinate
+      level: review
+
+  # The hosted agent itself. The platform serves the widget; the site embeds it.
+  # `protected_action` is what a held conversation cannot do.
+  chatbots:
+    - id: support-bot
+      workspace: support
+      agent_name: Harbor Supply support
+      site_domain: ${site_domain:-localhost}
+      protected_action: refund.issue
+      system_prompt: >-
+        You are the support assistant for Harbor Supply, a marine hardware store.
+        Help with orders, returns and product questions. You cannot issue refunds
+        yourself; a person on the team does that. Never repeat a customer's card
+        number, address or phone number back to them.
+
+  # Segregation of duties: the vendor guardrail requires an independent auditor.
+  roles:
+    - {principal: auditor@harbor.example, role: auditor, scope: main}
+
+  # Policy tests, run by the platform's own evaluator on `dmz verify`.
+  expectations:
+    - id: leaked-card-number-opens-the-breaker
+      name: a leaked card number opens the breaker
+      workspace: support
+      labels: {rt_agent_pii_leak_v1: 0.8}
+      enforce: block
+      policies: [Block on PII leak]
+    - id: scope-creep-is-held-not-blocked-and-reviewed
+      name: scope creep is held, not blocked, and reviewed
+      workspace: support
+      labels: {rt_agent_scope_creep_v1: 0.75}
+      fired: [rt_agent_scope_creep_v1]
+      enforce: hold
+      coordinate: review
+      policies: [Hold the agent on scope creep, Open a review on scope creep]
+    - id: an-ordinary-help-request-changes-nothing
+      name: an ordinary help request changes nothing
+      workspace: support
+      labels: {rt_signal_help_request_v1: 0.9}
+      enforce: none
+      coordinate: none

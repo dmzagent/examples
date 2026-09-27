@@ -8,7 +8,7 @@ the platform calls itself.
     python3 app/desk.py            # http://localhost:8002
 
 It also listens on POST /hooks/remediate for the remediation directives
-the governance file points at this machine, and shows them.
+the manifest points at this machine, and shows them.
 """
 from __future__ import annotations
 

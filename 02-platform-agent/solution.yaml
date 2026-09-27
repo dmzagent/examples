@@ -1,0 +1,74 @@
+# Solution Manifest for the governance around Harbor Supply's invoice-triage agent.
+#
+# The agent itself is defined and deployed by the application (app/agent.py):
+# the platform binds an agent to the key that created it, and its dogma is
+# versioned with the code that describes it. What this file declares is the
+# governance around it: the settings, the vocabulary, the breaker on the
+# agent's subject, and the expectations the platform's evaluator must meet.
+#
+#   ./setup.sh [--var posture=observe]
+#
+apiVersion: dmzagent.com/v1
+kind: SolutionManifest
+metadata:
+  name: harbor-platform-agent
+  vendor: ${DMZAGENT_VENDOR}
+  version: 1
+spec:
+  divisions:
+    - id: main
+      division_id: ${DMZAGENT_DIVISION_ID}
+      config:
+        reasoning_mode: per_frame
+        enforcement_posture: ${posture:-enforce}
+
+  corpora:
+    - id: agent-corpus
+      # tool-misuse and scope-creep tags on what the agent does
+      reasoning_canons: ["library/cn_seed_openai_agent_safety@latest"]
+
+  workspaces:
+    - id: agents
+      workspace_id: ${DMZAGENT_WORKSPACE_ID}
+      division: main
+      engine: reasoning
+      corpus: agent-corpus
+
+  circuit_breaker_policies:
+    - id: block-tool-misuse
+      workspace: agents
+      name: Block on tool misuse
+      description: The agent used a capability in a way its charter does not cover.
+      rules: [{tag: rt_agent_tool_misuse_v1, op: ">=", value: 0.6}]
+      action: block
+    - id: review-scope-creep
+      workspace: agents
+      name: Review on scope creep
+      description: "The agent is drifting beyond invoice triage (half-open: allowed, flagged)."
+      rules: [{tag: rt_agent_scope_creep_v1, op: ">=", value: 0.5}]
+      action: review
+
+  policies:
+    - id: review-escalating-run
+      workspace: agents
+      name: Review a run that keeps escalating
+      when: [{kind: strength, label: rt_pattern_escalation_v1, op: ">=", threshold: 0.5}]
+      lane: coordinate
+      level: review
+
+  roles:
+    - {principal: auditor@harbor.example, role: auditor, scope: main}
+
+  expectations:
+    - id: tool-misuse-opens-the-breaker
+      name: tool misuse opens the breaker
+      workspace: agents
+      labels: {rt_agent_tool_misuse_v1: 0.7}
+      enforce: block
+      policies: [Block on tool misuse]
+    - id: scope-creep-is-flagged-not-stopped
+      name: scope creep is flagged, not stopped
+      workspace: agents
+      labels: {rt_agent_scope_creep_v1: 0.6}
+      enforce: challenge
+      policies: [Review on scope creep]

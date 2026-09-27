@@ -39,6 +39,11 @@ class FakePlatform:
         self.ledger: list[dict] = []
         self.souls: dict[str, dict] = {}
         self.mcp_calls: list[tuple[str, dict]] = []
+        # The Solution Manifest surface: stacks by name, each with its managed
+        # resources and versions; drift items a test can plant.
+        self.stacks: dict[str, dict] = {}
+        self.drift: list[dict] = []
+        self.last_manifest: dict | None = None
 
     # The transport signature the client expects.
     def __call__(self, method: str, url: str, headers: dict, body: bytes | None, timeout: float):
@@ -228,9 +233,33 @@ class FakePlatform:
         if path == f"/v1/workspaces/{self.workspace_id}/logic-canons":
             return 200, {"installs": [{"logic_canon_id": c, "version": v} for c, v in self.logic_installs.items()]}
         if path == "/v1/agent-stream/api-keys":
+            if self.role != "tenant_admin":
+                return 403, {"detail": "tenant_admin required"}
             key = f"ck_{uuid.uuid4().hex}"
-            self.minted_keys.append({"label": payload.get("label"), "key": key})
-            return 200, {"key": key, "workspace_id": self.workspace_id, "scopes": "agent_stream:write,cb:check"}
+            self.minted_keys.append({"label": payload.get("label"), "key": key, "workspace_id": payload.get("workspace_id")})
+            return 200, {"key": key, "workspace_id": payload.get("workspace_id"), "scopes": "agent_stream:write,cb:check"}
+        if path == "/v1/manifests/validate":
+            return self.mf_validate(payload)
+        if path == "/v1/manifests/plan":
+            return self.mf_plan(payload)
+        if path == "/v1/manifests/apply":
+            return self.mf_apply(payload)
+        if path == "/v1/stacks" and method == "GET":
+            return 200, {"vendor_id": "vd_1", "stacks": [self._stack_row(s) for s in self.stacks.values()]}
+        if path.startswith("/v1/stacks/"):
+            parts = path.split("/")
+            stack = next((s for s in self.stacks.values() if s["stack_id"] == parts[3]), None)
+            if not stack:
+                return 404, {"detail": "stack not found"}
+            if len(parts) == 4 and method == "GET":
+                return 200, {**self._stack_row(stack), "versions": stack["versions"],
+                             "resources": [{"kind": r["kind"], "logical_id": lid, "physical_id": r["physical_id"],
+                                            "deletion_policy": "retain"} for lid, r in stack["resources"].items()],
+                             "outputs": []}
+            if len(parts) == 5 and parts[4] == "destroy":
+                return self.mf_destroy(stack, payload)
+            if len(parts) == 5 and parts[4] == "drift":
+                return self.mf_drift(stack, payload)
         return 404, {"detail": f"fake platform: no route for {method} {path}"}
 
     # ----------------------------------------------------------------- #
@@ -380,6 +409,264 @@ class FakePlatform:
             return ok({"content": [{"type": "text", "text": json.dumps(data, sort_keys=True)}], "_data": data,
                        "isError": False, "_latency_ms": 1.0})
         return err(-32601, f"Unknown method: {method}")
+
+    # ----------------------------------------------------------------- #
+    # The Solution Manifest surface (JSON manifests; the real server parses YAML)
+    # ----------------------------------------------------------------- #
+
+    MF_KINDS = (("divisions", "division"), ("logic_canons", "logic_canon"), ("corpora", "corpus"),
+                ("workspaces", "workspace"), ("circuit_breaker_policies", "circuit_breaker_policy"),
+                ("policies", "policy"), ("chatbots", "chatbot"))
+
+    def _manifest(self, payload: dict):
+        src = (payload or {}).get("manifest")
+        if isinstance(src, str):
+            try:
+                src = json.loads(src)
+            except ValueError:
+                return None, (400, {"detail": {"message": "manifest could not be parsed",
+                                               "issues": ["the fake platform accepts JSON manifests"]}})
+        if not isinstance(src, dict):
+            return None, (400, {"detail": "manifest required"})
+        self.last_manifest = src
+        return src, None
+
+    def _flatten(self, m: dict) -> list[dict]:
+        spec = m.get("spec") or {}
+        out = []
+        for section, kind in self.MF_KINDS:
+            for item in spec.get(section) or []:
+                if isinstance(item, dict) and item.get("id"):
+                    out.append({"kind": kind, "logical_id": item["id"], "props": item})
+        for rb in spec.get("roles") or []:
+            lid = f"{rb.get('principal')}:{rb.get('role')}:{rb.get('scope', '*')}"
+            out.append({"kind": "role_binding", "logical_id": lid, "props": rb})
+        return out
+
+    def _issues(self, m: dict) -> list[str]:
+        issues = []
+        if m.get("kind") != "SolutionManifest":
+            issues.append("kind must be 'SolutionManifest'")
+        meta = m.get("metadata") or {}
+        if not meta.get("name"):
+            issues.append("metadata.name is required")
+        if meta.get("vendor") not in (None, "vd_1", "fake-vendor"):
+            return [f"vendor {meta.get('vendor')!r} is not your vendor"]
+        spec = m.get("spec") or {}
+        ws_ids = {w.get("id") for w in spec.get("workspaces") or []}
+        for w in spec.get("workspaces") or []:
+            if w.get("engine") not in ("reasoning", "logic"):
+                issues.append(f"workspace '{w.get('id')}': engine must be one of ['logic', 'reasoning']")
+        for bp in spec.get("circuit_breaker_policies") or []:
+            if bp.get("workspace") not in ws_ids:
+                issues.append(f"circuit_breaker_policy '{bp.get('id')}': workspace '{bp.get('workspace')}' not declared")
+            if bp.get("action") not in ("allow", "review", "block"):
+                issues.append(f"circuit_breaker_policy '{bp.get('id')}': action must be one of ['allow', 'block', 'review']")
+        for rp in spec.get("policies") or []:
+            if rp.get("workspace") not in ws_ids:
+                issues.append(f"policy '{rp.get('id')}': workspace '{rp.get('workspace')}' not declared")
+        for cbt in spec.get("chatbots") or []:
+            if not cbt.get("site_domain") and cbt.get("allow_any_origin") is not True:
+                issues.append(f"chatbot '{cbt.get('id')}': site_domain is required")
+        return issues
+
+    def _guardrails(self, m: dict) -> list[str]:
+        roles = (m.get("spec") or {}).get("roles") or []
+        if not any(r.get("role") == "auditor" for r in roles):
+            return ["guardrail: an 'auditor' role binding is required (segregation of duties)"]
+        return []
+
+    def _stack_row(self, stack: dict) -> dict:
+        return {k: stack[k] for k in ("stack_id", "vendor_id", "name", "status", "current_version", "updated_at")}
+
+    def mf_validate(self, payload: dict):
+        m, err = self._manifest(payload)
+        if err:
+            return err
+        issues = self._issues(m)
+        meta = m.get("metadata") or {}
+        out = {"ok": not issues, "issues": issues, "metadata": meta}
+        if not issues:
+            out["resources"] = [{"kind": r["kind"], "logical_id": r["logical_id"], "depends_on": []} for r in self._flatten(m)]
+            out["expectations"] = list((m.get("spec") or {}).get("expectations") or [])
+            out["guardrails"] = self._guardrails(m)
+            out["lock"] = {"content_hash": "sha256:fake"}
+            stack = self.stacks.get(meta.get("name"))
+            out["stack"] = self._stack_row(stack) if stack else None
+        return 200, out
+
+    def _changes(self, stack: dict | None, m: dict) -> list[dict]:
+        current = (stack or {}).get("resources") or {}
+        desired = self._flatten(m)
+        changes = []
+        for r in desired:
+            cur = current.get(r["logical_id"])
+            if cur is None:
+                changes.append({"action": "add", "kind": r["kind"], "logical_id": r["logical_id"]})
+            elif cur["state"] != r["props"]:
+                changed = sorted(k for k in set(cur["state"]) | set(r["props"]) if cur["state"].get(k) != r["props"].get(k))
+                changes.append({"action": "update", "kind": r["kind"], "logical_id": r["logical_id"], "changed_props": changed})
+            else:
+                changes.append({"action": "no_change", "kind": r["kind"], "logical_id": r["logical_id"]})
+        wanted = {r["logical_id"] for r in desired}
+        for lid, cur in current.items():
+            if lid not in wanted:
+                changes.append({"action": "delete", "kind": cur["kind"], "logical_id": lid, "deletion_policy": "retain"})
+        return changes
+
+    def mf_plan(self, payload: dict):
+        m, err = self._manifest(payload)
+        if err:
+            return err
+        issues = self._issues(m)
+        if issues:
+            return 400, {"detail": {"message": "manifest is invalid", "issues": issues}}
+        meta = m.get("metadata") or {}
+        stack = self.stacks.get(meta.get("name"))
+        changes = self._changes(stack, m)
+        summary = {a: sum(1 for c in changes if c["action"] == a) for a in ("add", "update", "replace", "delete", "no_change")}
+        return 200, {"stack_id": stack["stack_id"] if stack else "(unprovisioned)", "exists": bool(stack),
+                     "from_version": stack["current_version"] if stack else None,
+                     "to_version": (stack["current_version"] if stack else 0) + 1,
+                     "summary": summary, "changes": changes,
+                     "meter_impact": {"skus_touched": [], "apply_is_metered": True},
+                     "evidence_impact": {"controls_gained": 0, "valuation_sources_added": 0},
+                     "lock": {"content_hash": "sha256:fake"}, "guardrails": self._guardrails(m)}
+
+    def _provision(self, stack: dict, r: dict) -> str:
+        kind, lid, props = r["kind"], r["logical_id"], r["props"]
+        existing = (stack["resources"].get(lid) or {}).get("physical_id")
+        if kind == "division":
+            return props.get("division_id") or f"dv_{lid}"
+        if kind == "workspace":
+            return props.get("workspace_id") or f"ws_{lid}"
+        if kind == "logic_canon":
+            base = existing.split("@")[0] if existing else f"lcanon_{lid}"
+            version = 1 if not existing else (int(existing.split("@")[1]) +
+                                              (1 if stack["resources"][lid]["state"].get("rulebook") != props.get("rulebook") else 0))
+            return f"{base}@{version}"
+        if kind == "circuit_breaker_policy":
+            pid = existing or f"cbp_{uuid.uuid4().hex[:12]}"
+            self.cb_policies[pid] = {"cb_policy_id": pid, "workspace_id": self.workspace_id, "name": props.get("name") or lid,
+                                     "rules": props.get("rules") or [], "action": props.get("action"),
+                                     "scope": props.get("scope") or "subject", "enabled": bool(props.get("enabled", True)),
+                                     "description": props.get("description")}
+            return pid
+        if kind == "policy":
+            pid = existing or f"pol_{uuid.uuid4().hex[:14]}"
+            conds = props.get("when") if props.get("when") is not None else props.get("conditions")
+            self.policies[pid] = {"policy_id": pid, "workspace_id": self.workspace_id, "name": props.get("name") or lid,
+                                  "conditions": conds or [], "lane": props.get("lane"), "level": props.get("level"),
+                                  "soul": props.get("soul") or "reasoning", "config": props.get("config") or {},
+                                  "status": "active", "enabled": bool(props.get("enabled", True)),
+                                  "description": props.get("description")}
+            return pid
+        if kind == "chatbot":
+            eid = existing or f"emb_{uuid.uuid4().hex[:10]}"
+            self.chatbots[eid] = {"embed_id": eid, "workspace_id": self.workspace_id, "division_id": self.division_id,
+                                  "agent_name": props.get("agent_name"), "site_domain": props.get("site_domain") or "",
+                                  "protected_action": props.get("protected_action"),
+                                  "config": {**(props.get("config") or {}), "system_prompt": props.get("system_prompt")}}
+            return eid
+        return f"{kind}:{lid}"
+
+    def _unprovision(self, stack: dict, lid: str) -> None:
+        r = stack["resources"].get(lid) or {}
+        pid = r.get("physical_id")
+        if r.get("kind") == "circuit_breaker_policy":
+            self.cb_policies.pop(pid, None)
+        elif r.get("kind") == "policy":
+            self.policies.pop(pid, None)
+        elif r.get("kind") == "chatbot":
+            self.chatbots.pop(pid, None)
+
+    def _four_eyes(self, payload: dict):
+        applied_by = (payload.get("applied_by") or "apikey:ak_1").strip()
+        approved_by = (payload.get("approved_by") or "").strip() or None
+        if not approved_by:
+            return None, None, (409, {"detail": {"message": "a vendor guardrail refused this manifest", "reason": "guardrail",
+                                                "violations": ["guardrail: an approver is required (maker-checker / four-eyes)"]}})
+        if approved_by == applied_by:
+            return None, None, (409, {"detail": {"message": f"author≠approver violated: applied_by and approved_by are both {applied_by!r}",
+                                                "reason": "maker_checker"}})
+        return applied_by, approved_by, None
+
+    def mf_apply(self, payload: dict):
+        if self.role != "tenant_admin":
+            return 403, {"detail": "tenant_admin in this vendor required"}
+        m, err = self._manifest(payload)
+        if err:
+            return err
+        issues = self._issues(m)
+        if issues:
+            return 400, {"detail": {"message": "manifest is invalid", "issues": issues}}
+        applied_by, approved_by, err = self._four_eyes(payload)
+        if err:
+            return err
+        violations = self._guardrails(m)
+        if violations:
+            return 409, {"detail": {"message": "a vendor guardrail refused this manifest", "reason": "guardrail",
+                                    "violations": violations}}
+        meta = m.get("metadata") or {}
+        stack = self.stacks.get(meta["name"])
+        if stack is None:
+            stack = self.stacks[meta["name"]] = {"stack_id": f"stack_{uuid.uuid4().hex[:12]}", "vendor_id": "vd_1",
+                                                 "name": meta["name"], "status": "pending", "current_version": None,
+                                                 "updated_at": "2026-09-27T12:00:00Z", "resources": {}, "versions": []}
+        changes = self._changes(stack, m)
+        actionable = [c for c in changes if c["action"] != "no_change"]
+        if not actionable:
+            return 200, {"status": "no_change", "idempotent": True, "version": stack["current_version"], "stack_id": stack["stack_id"]}
+        desired = {r["logical_id"]: r for r in self._flatten(m)}
+        applied = []
+        for c in changes:
+            if c["action"] == "delete":
+                self._unprovision(stack, c["logical_id"])
+                stack["resources"].pop(c["logical_id"], None)
+            elif c["action"] != "no_change":
+                r = desired[c["logical_id"]]
+                stack["resources"][c["logical_id"]] = {"kind": r["kind"], "physical_id": self._provision(stack, r), "state": r["props"]}
+            if c["action"] != "no_change":
+                applied.append({"action": c["action"], "kind": c["kind"], "logical_id": c["logical_id"]})
+        version = (stack["current_version"] or 0) + 1
+        stack["versions"].insert(0, {"version_no": version, "applied_by": applied_by, "approved_by": approved_by,
+                                     "ledger_anchor": str(uuid.uuid4()), "created_at": "2026-09-27T12:00:00Z"})
+        stack.update({"current_version": version, "status": "active"})
+        return 200, {"status": "applied", "version": version, "applied": applied, "stack_id": stack["stack_id"],
+                     "ledger_anchor": stack["versions"][0]["ledger_anchor"],
+                     "summary": {a: sum(1 for c in changes if c["action"] == a) for a in ("add", "update", "replace", "delete", "no_change")}}
+
+    def mf_destroy(self, stack: dict, payload: dict):
+        if self.role != "tenant_admin":
+            return 403, {"detail": "tenant_admin in this vendor required"}
+        applied_by, approved_by, err = self._four_eyes(payload or {})
+        if err:
+            return err
+        applied = []
+        for lid in list(stack["resources"]):
+            if stack["resources"][lid]["kind"] != "role_binding":
+                self._unprovision(stack, lid)
+                applied.append({"action": "delete", "kind": stack["resources"][lid]["kind"], "logical_id": lid})
+                del stack["resources"][lid]
+        version = (stack["current_version"] or 0) + 1
+        stack["versions"].insert(0, {"version_no": version, "applied_by": applied_by, "approved_by": approved_by,
+                                     "ledger_anchor": str(uuid.uuid4()), "created_at": "2026-09-27T12:00:00Z"})
+        stack["current_version"] = version
+        return 200, {"status": "applied", "version": version, "applied": applied, "stack_id": stack["stack_id"], "retained": []}
+
+    def mf_drift(self, stack: dict, payload: dict):
+        p = payload or {}
+        if (p.get("reconcile") or p.get("adopt")) and self.role != "tenant_admin":
+            return 403, {"detail": "tenant_admin in this vendor required"}
+        items = list(self.drift)
+        out = {"stack_id": stack["stack_id"], "drifted": bool(items), "items": items}
+        if items and p.get("reconcile"):
+            out["reconciled"] = [it["logical_id"] for it in items]
+            self.drift = []
+        elif items and p.get("adopt"):
+            out["adopted"] = [it["logical_id"] for it in items]
+            self.drift = []
+        return 200, out
 
 
 def _cmp(op: str, a: float, b: float) -> bool:

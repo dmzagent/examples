@@ -1,4 +1,6 @@
-"""A small HTTP client for the DMZAgent operator surface.
+"""The HTTP client every dmz command uses: one API key against one platform
+endpoint, requests paced under the vendor rate limit and a 429 waited out.
+A small HTTP client for the DMZAgent operator surface.
 
 Standard library only. The toolkit talks to the same `/v1` endpoints the
 console and the SDKs use, authenticated as an API key. Two behaviours matter
@@ -23,7 +25,7 @@ import urllib.request
 from typing import Any, Callable
 
 DEFAULT_BASE_URL = "https://api.dmzagent.com"
-USER_AGENT = "giaas/0.1.0"
+USER_AGENT = "dmz/0.1.0"
 
 Transport = Callable[[str, str, dict, bytes | None, float], tuple[int, dict, bytes]]
 
@@ -185,8 +187,8 @@ class Platform:
         configured = (os.environ.get("DMZAGENT_DIVISION_ID") or "").strip()
         if configured:
             return configured
-        sess = self.post("/v1/agent-sessions", {"label": "giaas: division lookup",
-                                                "runner": "giaas"})
+        sess = self.post("/v1/agent-sessions", {"label": "dmz: division lookup",
+                                                "runner": "dmz"})
         division_id = sess.get("division_id")
         session_id = sess.get("session_id")
         if session_id:

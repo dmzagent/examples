@@ -1,12 +1,13 @@
 # dmz — the DMZAgent command line
 
-One command for the whole loop: declare governance in a file and reconcile a
-workspace with it; check, hold, release and review from the terminal; put
-the platform's MCP server in front of Claude Code, Claude Desktop, Cursor or
-your own agent. Standard library only, Python 3.10 or newer.
+One command for the whole loop: declare governance in a Solution Manifest
+and turn it through the platform's GitOps wheel (validate, plan, apply,
+verify, drift); check, hold, release and review from the terminal; put the
+platform's MCP server in front of Claude Code, Claude Desktop, Cursor or your
+own agent. Standard library only, Python 3.10 or newer.
 
 ```
-pip install ./cli          # from this repository; `dmz` and `giaas` land on PATH
+pip install ./cli          # from this repository; `dmz` lands on PATH
 dmz auth set               # paste a key; saved for this machine, never on the command line
 dmz doctor                 # is everything in place?
 ```
@@ -20,9 +21,11 @@ Without installing: `PYTHONPATH=cli python3 -m dmz ...`. The examples'
 | --- | --- |
 | `dmz auth set` / `status` / `clear` | save a key to a profile (pasted, input hidden; `~/.config/dmz/credentials.json`, mode 0600), list profiles by fingerprint, forget one |
 | `dmz whoami` | the key in use, where it came from, its principal, workspace, role and division |
-| `dmz doctor` | Python, key, endpoint, role, workspace, division, installed Canons, the MCP server, Ollama, a governance file; each with what to do about it |
-| `dmz init <template>` | write a `governance.py` to start from: `chatbot`, `agent`, `sdk-app`, `desk`, `logic`, `mcp` |
-| `dmz plan` / `apply` / `verify` / `destroy` / `outputs` | governance as code, below |
+| `dmz doctor` | Python, key, endpoint, role, workspace, division, installed Canons, the manifest surface, the MCP server, Ollama, a manifest; each with what to do about it |
+| `dmz init <template>` | write a `solution.yaml` to start from: `chatbot`, `agent`, `sdk-app`, `desk`, `logic`, `mcp` |
+| `dmz validate` / `plan` / `apply` / `verify` / `destroy` | the manifest wheel, below |
+| `dmz drift` / `stack` / `stacks` | what changed behind the file's back; a Stack's resources, ids and versions; the vendor's Stacks |
+| `dmz keys mint` | a least-privilege key for a workspace, written straight to an env file |
 | `dmz check <subject>` | may an agent act on this subject now? exit 0 when the breaker allows, 1 when not |
 | `dmz hold` / `release` / `engage <subject> --reason` | a recoverable pause, its release, a hard stop; every transition lands on the ledger |
 | `dmz states` / `decisions [--follow]` | breaker states; transitions newest first, or tailed live |
@@ -41,104 +44,155 @@ say what to do next, not just what happened:
 
 ```
 $ dmz apply
-dmz: this operation is console-only: API keys cannot do it (POST /v1/corpus/install)
-hint: open the console for this one; everything else in the workflow stays in the terminal
+dmz: a vendor guardrail refused the apply
+  x guardrail: an approver is required (maker-checker / four-eyes)
+hint: apply needs an approver distinct from the applier (four-eyes): in CI that is the merger; locally pass --approved-by <reviewer> or set DMZ_APPROVED_BY
 ```
 
 ### Where the key comes from
 
 In order: `DMZAGENT_API_KEY` (or `DMZAGENT_APP_KEY`) in the environment; an
 env file, either `--env-file`, `$DMZAGENT_ENV_FILE`, `./app/.env` or `./.env`
-(the file `dmz apply` writes for an application); a profile saved with `dmz
-auth set` (`--profile`, `$DMZ_PROFILE`, else `default`). `dmz whoami` says
-which one is in use. Subjects can be typed as the platform's MCP server
+(the file `dmz apply --write-env` and `dmz keys mint` write for an
+application); a profile saved with `dmz auth set` (`--profile`,
+`$DMZ_PROFILE`, else `default`). `dmz whoami` says which one is in use. Subjects can be typed as the platform's MCP server
 canonicalizes them: `customer:alice` becomes
 `subject:<division>:customer:alice`.
 
-## Governance as code
+## Solution Manifests
 
-Declare the governance an application needs in one Python file. Plan it,
-apply it, verify it, take it back out. The same file goes through code
-review and CI, so the record of *who changed which policy, when, and who
-approved it* is your Git history.
+Declare the governance an application needs in one YAML file, the
+platform's **Solution Manifest**. The platform validates it, computes the
+Change Set against the deployed **Stack**, refuses an apply that breaks the
+vendor's guardrails or names the same person as maker and checker,
+provisions the resources, anchors every version on the ledger, and reports
+drift. `dmz` is the client of that wheel; nothing is reconciled on this
+side, and no state file lives next to the manifest.
 
 ```
-dmz plan                        # read-only change set
-dmz apply --write-env app/.env  # reconcile; ids and the app key land in the env file
-dmz verify                      # requirements met? policies resolve as declared?
-dmz destroy                     # remove what the file declares
-dmz plan --markdown             # a change set for a pull request comment
+dmz validate                    # schema, references, and the guardrail preview
+dmz plan                        # the Change Set against the Stack; read-only
+dmz apply --approved-by ravi --write-env app/.env   # reconcile; the ids land in the env file
+dmz keys mint --workspace support --label site --write-env app/.env   # the app's own key
+dmz verify                      # the file's expectations, on the platform's evaluator
+dmz stack                       # resources, physical ids, versions with applier and approver
+dmz drift [--reconcile|--adopt] # what changed on the platform; put it back, or accept it
+dmz destroy --approved-by ravi  # remove what the Stack manages; workspaces and their data stay
+dmz plan --markdown             # a Change Set for a pull request comment
 ```
 
-A governance file:
+A manifest (`dmz init chatbot` writes one like it; the six examples are
+complete ones):
 
-```python
-from giaas import Governance, presence, strength, settings
+```yaml
+apiVersion: dmzagent.com/v1
+kind: SolutionManifest
+metadata:
+  name: support-bot
+  vendor: ${DMZAGENT_VENDOR}                 # filled from your key
+  version: 1
+spec:
+  divisions:
+    - id: main
+      division_id: ${DMZAGENT_DIVISION_ID}   # adopt the division your key belongs to
+      config:
+        reasoning_mode: per_frame            # reason on every message
+        enforcement_posture: ${posture:-enforce}   # observe | warn | enforce
 
-governance = Governance("support-bot", "Harbor Supply's support agent")
+  corpora:
+    - id: support-corpus                     # the Canons the rules below need;
+      reasoning_canons: ["library/cn_seed_openai_agent_safety@latest"]   # installed by apply
 
-# Operator settings on the division. Typed keys are validated here.
-governance.division_config(
-    reasoning_mode="per_frame",                            # reason on every message
-    enforcement_posture=settings.get("posture", "enforce"),  # observe | warn | enforce
-)
+  workspaces:
+    - id: support
+      workspace_id: ${DMZAGENT_WORKSPACE_ID}  # adopt the workspace your key is bound to
+      division: main
+      engine: reasoning
+      corpus: support-corpus
 
-# A Canon is a tag vocabulary plus starter policies. The workspace must have
-# it installed for these tags to ever fire; API keys cannot install one, so
-# this is a checked requirement with console instructions when it is missing.
-governance.require_canon("cn_seed_openai_agent_safety",
-                         why="prompt-injection, PII-leak and tool-misuse tags")
+  circuit_breaker_policies:                  # clauses over the subject's soul → breaker state
+    - id: block-pii-leak
+      workspace: support
+      name: Block on PII leak
+      rules: [{tag: rt_agent_pii_leak_v1, op: ">=", value: 0.6}]
+      action: block
 
-# Circuit-breaker rules: clauses over the subject's soul → breaker state.
-governance.breaker_policy("Block on prompt injection",
-    rules=[("rt_agent_prompt_injection_v1", ">=", 0.7)], action="block")
+  policies:                                  # response lanes: enforce, coordinate, remediate, record
+    - id: hold-scope-creep
+      workspace: support
+      name: Hold on scope creep
+      when: [{kind: strength, label: rt_agent_scope_creep_v1, op: ">=", threshold: 0.7}]
+      lane: enforce
+      level: hold
 
-# Response policies from the closed catalog: enforce, coordinate, remediate.
-governance.policy("Hold on scope creep",
-    when=[strength("rt_agent_scope_creep_v1", ">=", 0.5)], lane="enforce", level="hold")
-governance.policy("Open a review on scope creep",
-    when=[presence("rt_agent_scope_creep_v1")], lane="coordinate", level="review")
+  roles:                                     # the vendor guardrail requires an independent auditor
+    - {principal: auditor@example.com, role: auditor, scope: main}
 
-# A least-privilege key for the application, minted once, written to the env file.
-governance.sdk_key("support-bot app", env_var="DMZAGENT_APP_KEY")
-
-# Policy tests, run by the platform's own evaluator.
-governance.expect("scope creep is held and reviewed",
-    labels={"rt_agent_scope_creep_v1": 0.8}, enforce="hold", coordinate="review")
+  expectations:                              # policy tests, run by `dmz verify`
+    - id: scope-creep-is-held
+      workspace: support
+      labels: {rt_agent_scope_creep_v1: 0.8}
+      enforce: hold
 ```
 
-`settings` holds values passed as `--var KEY=VALUE`, so the same file can be
-applied in `observe` posture to a staging workspace and `enforce` to
-production. `dmz init` writes a file like this for each shape of
-application.
+`${DMZAGENT_VENDOR}`, `${DMZAGENT_DIVISION_ID}` and `${DMZAGENT_WORKSPACE_ID}`
+are filled from the key's own context before the file is sent, so one file
+works for whoever applies it. Any other `${name:-default}` takes `--var
+name=value`, so the same file is applied in `observe` posture to a staging
+workspace and in `enforce` to production. References the manifest does not
+know are left alone.
 
 ### What it manages
 
-| Declaration | Platform resource | Identity |
+| Section | Platform resource | Notes |
 | --- | --- | --- |
-| `division_config(...)` | the division's settings (reasoning mode, posture) | the division |
-| `require_canon(id)` | a Canon installed in the workspace | canon id; console-only to install |
-| `breaker_policy(name, rules, action)` | a circuit-breaker policy | name |
-| `policy(name, when, lane, level)` | a response policy (enforce, coordinate, remediate) | name |
-| `chatbot(agent_name, site_domain, ...)` | a hosted chat agent and its embed | agent name in the division |
-| `logic_rulebook(name, slug, rulebook)` | a private Logic Canon, versioned and installed | slug |
-| `sdk_key(label, env_var)` | an application key, minted once | label |
-| `expect(name, labels, ...)` | a policy test run by `dmz verify` | name |
+| `divisions` | a division and its settings (reasoning mode, posture) | `division_id` adopts an existing one |
+| `workspaces` | a workspace on the reasoning or logic engine, with its corpus installed | `workspace_id` adopts the key's own |
+| `corpora` | the Canons a workspace carries | `library/<canon>@<version>`, `@latest` resolved at apply; inline logic canons by id |
+| `logic_canons` | a private Logic Canon with an inline rulebook | published as a new version when the rules change; the corpus and workspace re-apply |
+| `circuit_breaker_policies` | a circuit-breaker policy (`allow`, `review`, `block`) | identity is the logical id; a changed workspace replaces it |
+| `policies` | a response policy: `enforce`, `coordinate`, `remediate` or `record`, on the reasoning or logic soul | `config.delivery` for a webhook remediation |
+| `chatbots` | a hosted chat agent and its embed | agent name, site origin, protected action, system prompt |
+| `roles` | a role binding on a division | an `auditor` binding is required by the default guardrails |
+| `expectations` | policy tests | not provisioned; `dmz verify` evaluates them |
 
-Identity is by name, so an edited rule plans as an update and a renamed one
-as a delete plus a create. State is a small JSON file next to the
-governance file (`.giaas/<name>.state.json`, gitignored) holding ids and
-key *prefixes*; the minted secret goes only to the env file, mode 0600.
+Keys are not manifest resources: `dmz keys mint` mints one for a workspace
+named by its logical id in the manifest and writes the secret to the env
+file (mode 0600), never to the terminal unless `--show` asks.
+
+### Stacks, versions and the two names on every apply
+
+The platform keeps the Stack: the resources it manages with their physical
+ids, and one version per apply with who applied it, who approved it and
+the ledger anchor. `dmz stack` lists both. Applying an unchanged file
+answers `no change`; an edited one plans as `~` (update), a resource whose
+identity changed as replace, a removed one as delete, and a logic canon
+whose rulebook changed as an update that re-applies its corpus and
+workspace (`re-applied: ... changed`).
+
+Every apply names a maker and a checker: the maker is the key's principal
+unless `--applied-by` says otherwise, the checker is `--approved-by` or
+`DMZ_APPROVED_BY`. The platform refuses an apply without a checker, or with
+the same principal on both sides, and refuses a manifest without an
+independent auditor or with an unpinned Canon. `dmz validate --strict` and
+`dmz plan --strict` fail on those guardrails before an apply is attempted.
+
+### The GitOps workflow
+
+[`.github/workflows/governance.yml`](../.github/workflows/governance.yml)
+turns the wheel from pull requests: a PR that edits a `solution.yaml` gets
+`dmz plan --markdown` posted as a comment, and the merge runs `dmz apply
+--applied-by <author> --approved-by <merger>`. The platform's maker-checker
+refusal is what makes self-merging a manifest change impossible.
 
 ### Credentials and limits
 
-`apply` and `destroy` need a **tenant_admin** key; operating (`check`,
-`hold`, reviews, `mcp enforce`) needs analyst; reads need viewer. Canon
-installs, workspace creation and key revocation are console operations for
-API keys; the toolkit reports them as unmet requirements with instructions,
-never fakes them. The free tier meters requests per vendor (a short burst of
-ten a second, 120 a minute); every call here is paced and a 429 is waited
-out, so a plan of forty resources takes a few seconds rather than failing.
+`apply`, `destroy` and `drift --reconcile` need a **tenant_admin** key;
+`validate`, `plan`, `verify`, `stack` and `drift` need any role in the
+vendor; operating (`check`, `hold`, reviews, `mcp enforce`) needs analyst;
+reads need viewer. Key revocation is a console operation. The free tier
+meters requests per vendor (a short burst of ten a second, 120 a minute);
+every call here is paced and a 429 is waited out.
 
 ## The MCP server
 
@@ -181,6 +235,8 @@ tested with the official MCP Python SDK client and with a scripted host.
 PYTHONPATH=cli python3 -m unittest discover -s cli/tests
 ```
 
-The toolkit against an in-memory platform; the command line over HTTP
-against the same fake; the bridge in process, as a subprocess speaking
-standard MCP, and through the official SDK when it is installed.
+The command line over HTTP against a fake platform that carries the
+manifest engine (validate, plan, apply with maker-checker and the auditor
+guardrail, verify, drift, destroy, key minting) and the operations surface;
+the bridge in process, as a subprocess speaking standard MCP, and through
+the official SDK when it is installed.

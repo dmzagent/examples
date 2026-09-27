@@ -5,7 +5,7 @@ import getpass
 import os
 import sys
 
-from giaas.client import ConfigError, Platform, fingerprint
+from ..client import ConfigError, Platform, fingerprint
 
 from .. import ui
 from ..config import DEFAULT_BASE_URL, credentials_path, delete_profile, load_credentials, save_profile

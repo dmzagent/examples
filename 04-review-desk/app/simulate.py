@@ -4,7 +4,7 @@ Each agent is a subject. Each script is a short conversation plus one
 sensitive action guarded with `guard(raise_on_open=True)`: the action runs
 when the breaker is closed or half-open and is refused when it is held or
 open. The desk (desk.py) shows the result; the platform's reasoning decides
-it from the governance in governance.py.
+it from the policies in solution.yaml.
 
     python3 app/simulate.py            # play every script once
     python3 app/simulate.py --loop 30  # again every 30 seconds

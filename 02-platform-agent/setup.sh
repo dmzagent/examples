@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
-# Set the platform up for this example: plan, apply, verify, install the SDK.
+# Set the platform up for this example through the Solution Manifest wheel,
+# then install the SDK the runner uses.
 #
 #   export DMZAGENT_API_KEY=ck_...        # a tenant_admin key for the workspace
+#   export DMZ_APPROVED_BY=reviewer       # the second pair of eyes the platform requires to apply
 #   ./setup.sh [--var posture=observe]
 set -euo pipefail
 cd "$(dirname "$0")"
 : "${DMZAGENT_API_KEY:?set DMZAGENT_API_KEY to a tenant_admin API key for the workspace}"
+: "${DMZ_APPROVED_BY:?set DMZ_APPROVED_BY to the reviewer approving this apply (maker-checker); in CI it is the merger}"
 export PYTHONPATH="$PWD/../cli${PYTHONPATH:+:$PYTHONPATH}"
-dmz="python3 -m dmz"          # the same as `dmz` once `pip install ../cli` has run
+dmz="python3 -m dmz"
 
-$dmz plan governance.py "$@"
+$dmz validate solution.yaml "$@"
 echo
-$dmz apply governance.py --write-env app/.env "$@"
+$dmz plan solution.yaml "$@"
 echo
-$dmz verify governance.py "$@" || echo "verify reported problems (see above)"
+$dmz apply solution.yaml --yes --write-env app/.env "$@"
 echo
-echo "Installing the dmzagent SDK for step 6 (the governance record)…"
-python3 -m pip install --quiet -r requirements.txt || echo "SDK install failed; run.py skips step 6 without it"
+grep -q '^DMZAGENT_APP_KEY=' app/.env 2>/dev/null \
+  || $dmz keys mint solution.yaml --workspace agents --label "invoice-triage app" --write-env app/.env
 echo
-echo "Next:  python3 app/run.py"
+$dmz verify solution.yaml "$@" || echo "verify reported problems (see above)"
+echo
+echo "Installing the dmzagent SDK for the runner…"
+python3 -m pip install --quiet -r requirements.txt
+echo
+echo "Next:  python3 app/run.py deploy && python3 app/run.py train && python3 app/run.py dispatch"

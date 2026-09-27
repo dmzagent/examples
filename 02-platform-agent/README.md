@@ -8,9 +8,11 @@ crosses. The cloud steps are docstrings: the platform's own harness runs
 them, inside the agent's allow-lists, and nothing written here executes there.
 
 ```
-governance.py      the governance around the agent: settings, vocabulary,
-                   breaker rules on the agent's subject, the application key
-setup.sh           plan → apply → verify; installs the SDK for step 6
+solution.yaml      the Solution Manifest for the governance around the agent:
+                   settings, vocabulary, breaker rules on the agent's subject,
+                   the auditor role, the expectations
+setup.sh           validate → plan → apply → mint the application key →
+                   verify; installs the SDK for step 6
 app/agent.py       the agent: charter, one client step, two cloud steps,
                    and the training scenarios it must decide deterministically
 app/run.py         the walkthrough: deploy, train, dispatch, run, outputs, record
@@ -23,7 +25,8 @@ app/invoices/      three invoices the client step scans locally
 
 ```bash
 export DMZAGENT_API_KEY=ck_...       # a tenant_admin key for the workspace
-./setup.sh                           # writes app/.env with an application key
+export DMZ_APPROVED_BY=reviewer      # who approved the change (maker-checker); in CI, the merger
+./setup.sh                           # applies the manifest, writes app/.env with an application key
 python3 app/run.py                   # the six steps below
 python3 app/run.py dogma             # or just print the compiled manifest
 ```
@@ -52,22 +55,26 @@ python3 app/run.py dogma             # or just print the compiled manifest
    target the dogma never bound is blocked outright. A write through a bound
    connector would sit in the pending queue for a person to confirm.
 6. **record** — the job is recorded on the agent stream with the SDK and the
-   agent's breaker is checked. The rules in `governance.py` decide that
+   agent's breaker is checked. The rules in `solution.yaml` decide that
    state from what reasoning tags on the record.
 
-## What the governance declares
+## What the manifest declares
 
-| Declaration | Effect |
+| Section of `solution.yaml` | Effect |
 |---|---|
-| `reasoning_mode="per_frame"`, `enforcement_posture` | reason on each record; `observe` first if you are turning enforcement on for the first time |
-| `require_canon("cn_seed_openai_agent_safety")` | the tool-misuse and scope-creep vocabulary |
-| breaker `block` on tool misuse, `review` on scope creep | the agent's own record moves its breaker |
-| `coordinate/review` on escalation | a person is asked when a run keeps escalating |
-| `sdk_key(...)` | the application's analyst key: it owns the agent it creates, serves client steps, records jobs, and cannot edit policy |
+| `divisions[main].config`: `reasoning_mode: per_frame`, `enforcement_posture` | reason on each record; `--var posture=observe` first if you are turning enforcement on for the first time |
+| `corpora[agent-corpus].reasoning_canons` | the tool-misuse and scope-creep vocabulary, installed into the workspace by apply |
+| `circuit_breaker_policies`: `block` on tool misuse, `review` on scope creep | the agent's own record moves its breaker |
+| `policies`: `coordinate/review` on escalation | a person is asked when a run keeps escalating |
+| `roles`: an auditor on the division | the segregation of duties the vendor guardrail requires |
+| `expectations` | tool misuse blocks; scope creep is challenged, not stopped: checked by `dmz verify` |
 
-The agent is deployed by the application rather than by `governance.py`
-because the runtime binds an agent to the key that created it, and its dogma
-belongs with the code that describes it, in the same commit.
+The application's key is minted by `setup.sh` (`dmz keys mint`, analyst
+role): it owns the agent it creates, serves client steps, records jobs, and
+cannot edit policy. The agent is deployed by the application rather than by
+`solution.yaml` because the runtime binds an agent to the key that created
+it, and its dogma belongs with the code that describes it, in the same
+commit.
 
 ## Honest limits
 

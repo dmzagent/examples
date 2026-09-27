@@ -14,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 import fleet  # noqa: E402
-import governance as gov_module  # noqa: E402
 
 
 class FakePlatform(BaseHTTPRequestHandler):
@@ -69,24 +68,23 @@ class FakePlatform(BaseHTTPRequestHandler):
         return self._json(404, {})
 
 
-class TestRulebook(unittest.TestCase):
-    def test_rulebook_shape(self):
-        rb = gov_module.RULEBOOK
-        ids = [r["id"] for r in rb["rules"]]
-        self.assertEqual(ids, ["over-temp", "pressure-spike", "sensor-offline", "bad-reading"])
-        for rule in rb["rules"]:
-            self.assertIn("match", rule)
-            self.assertTrue(rule.get("on_true"), rule["id"])
-            for action in rule["on_true"]:
-                self.assertIn("disposition", action)
-        bands = rb["rules"][0]["accumulate"]["bands"]
-        self.assertLess(bands["record"], bands["enforce"])
-        self.assertLess(bands["enforce"], bands["human"])
+class TestManifest(unittest.TestCase):
+    """The manifest is YAML the platform parses; here its text is checked for
+    the rules and the soul the controller relies on."""
 
-    def test_governance_declares_logic_soul_policies(self):
-        policies = gov_module.governance.by_kind("policy")
-        self.assertTrue(all(p.soul == "logic" for p in policies))
-        self.assertEqual(gov_module.governance.by_kind("logic_rulebook")[0].slug, "chiller-thermal")
+    TEXT = (Path(__file__).resolve().parents[1] / "solution.yaml").read_text()
+
+    def test_the_rulebook_declares_the_four_rules_in_order(self):
+        ids = [line.split("id:", 1)[1].strip() for line in self.TEXT.splitlines() if line.strip().startswith("- id: ") and "excursion" not in line]
+        rules = [i for i in ids if i in ("over-temp", "pressure-spike", "sensor-offline", "bad-reading")]
+        self.assertEqual(rules, ["over-temp", "pressure-spike", "sensor-offline", "bad-reading"])
+        self.assertIn("bands: {record: 1, enforce: 3, human: 5}", self.TEXT)
+
+    def test_the_workspace_is_logic_and_the_policies_are_on_the_logic_soul(self):
+        self.assertIn("engine: logic", self.TEXT)
+        self.assertEqual(self.TEXT.count("soul: logic"), 2 + 3)          # two policies, three expectations
+        self.assertIn("slug: chiller-thermal", self.TEXT)
+        self.assertIn("logic_canons: [chiller]", self.TEXT)
 
 
 class TestController(unittest.TestCase):

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Set the platform up for this example: plan, apply, verify, install the SDK.
+# Set the platform up for this example: plan, apply, verify, then print the
+# configuration that attaches the platform's MCP server to your MCP host.
 #
 #   export DMZAGENT_API_KEY=ck_...        # a tenant_admin key for the workspace
 #   ./setup.sh [--var posture=observe]
@@ -15,7 +16,9 @@ $dmz apply governance.py --write-env app/.env "$@"
 echo
 $dmz verify governance.py "$@" || echo "verify reported problems (see above)"
 echo
-echo "Installing the dmzagent SDK for step 6 (the governance record)…"
-python3 -m pip install --quiet -r requirements.txt || echo "SDK install failed; run.py skips step 6 without it"
+echo "The agent's key is in app/.env. To attach the platform's MCP server to a host:"
 echo
-echo "Next:  python3 app/run.py"
+$dmz --env-file app/.env mcp config --client claude-code
+echo
+echo "Next:  python3 app/agent.py --script     # the scripted day, in the terminal"
+echo "       python3 app/agent.py              # a conversation"

@@ -9,13 +9,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 : "${DMZAGENT_API_KEY:?set DMZAGENT_API_KEY to a tenant_admin API key for the workspace}"
-export PYTHONPATH="$PWD/../giaas${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PWD/../cli${PYTHONPATH:+:$PYTHONPATH}"
+dmz="python3 -m dmz"          # the same as `dmz` once `pip install ../cli` has run
 
-python3 -m giaas plan governance.py "$@"
+$dmz plan governance.py "$@"
 echo
-python3 -m giaas apply governance.py --env-file app/.env "$@"
+$dmz apply governance.py --write-env app/.env "$@"
 echo
-if ! python3 -m giaas verify governance.py "$@"; then
+if ! $dmz verify governance.py "$@"; then
   echo
   echo "verify reported problems (see above). The site still runs; policies on tags"
   echo "from a Canon that is not installed will not fire until it is."

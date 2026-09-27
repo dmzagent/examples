@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "giaas"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 import fleet  # noqa: E402
 import governance as gov_module  # noqa: E402

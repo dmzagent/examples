@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dmz-cli"
+version = "0.1.0"
+description = "The DMZAgent command line: governance as code, breakers and reviews from the terminal, and the platform's MCP server in front of any MCP host."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+dmz = "dmz.cli:main"
+giaas = "giaas.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["dmz*", "giaas*"]

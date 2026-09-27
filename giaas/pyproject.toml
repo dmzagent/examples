@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "giaas"
+version = "0.1.0"
+description = "Governance Infrastructure as a Service: declare DMZAgent governance in code and plan/apply it"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# No runtime dependencies on purpose: this runs in CI jobs and on operator
+# laptops, and every dependency is one more thing to get approved there.
+dependencies = []
+
+[project.scripts]
+giaas = "giaas.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["giaas*"]

@@ -1,0 +1,450 @@
+# Solution Manifest for Tidewater Lending's loan origination engine.
+#
+# Five agents work a loan file from application to a decision package:
+# intake, verification, conditions & remediation, compliance, decision. They
+# never approve a loan. This file declares the governance they run under:
+#
+#   * a deterministic rulebook (an inline Logic Canon) over every event the
+#     loan system emits about a file: debt-to-income and loan-to-value over
+#     policy, missing documents, unverified income, a Loan Estimate sent late,
+#     an adverse action without its reasons or past its deadline, HMDA fields
+#     incomplete at decision, and an approval by the person or agent that
+#     prepared the file;
+#   * responses from the closed catalog. A file that breaks a rule is HELD,
+#     not failed, so remediation can clear it. A regulatory breach BLOCKS and
+#     ESCALATES. A missing document opens a remediation TICKET. Approval by
+#     the preparer, or by any agent, is BLOCKED outright;
+#   * a reasoning workspace over what the agents themselves do (borrower data
+#     leaving where it belongs, tool misuse, deception);
+#   * the people: underwriters and closers decide, compliance audits, and the
+#     auditor holds no other role.
+#
+# The loan system computes two facts the rulebook cannot (the DSL compares a
+# field with a constant, not with another field): `approval.by_preparer`
+# (approver == preparer) and `approval.by_agent` (the approver is not a
+# person). The adapter that emits events is responsible for both.
+#
+# Applies and verifies offline-checked: see README.md, "What was checked".
+#
+#   ./setup.sh [--var posture=observe] [--var los_url=https://los.example/hooks/dmz]
+#
+apiVersion: dmzagent.com/v1
+kind: SolutionManifest
+metadata:
+  name: tidewater-loan-origination
+  vendor: ${DMZAGENT_VENDOR}
+  version: 1
+spec:
+  # Managed for the beta. The same file targets `self_hosted` for a lender that
+  # keeps every file on its own infrastructure; the license is then a secret
+  # reference, never a value.
+  deployment:
+    target: ${target:-cloud}
+
+  divisions:
+    - id: lending
+      name: Consumer lending
+      legal_hold: false
+      config:
+        enforcement_posture: ${posture:-enforce}
+        data_residency: us
+
+  # ------------------------------------------------------------------------
+  # The rulebook. Every rule is a predicate over one loan-file event; the
+  # thresholds are the lender's credit policy and the regulation's deadlines.
+  # ------------------------------------------------------------------------
+  logic_canons:
+    - id: lending-controls
+      slug: lending-controls
+      name: Loan origination controls
+      description: credit policy, documentation, TRID, ECOA/Reg B, HMDA and separation of duties over loan-file events
+      rulebook:
+        rules:
+          # -- credit policy: held for an underwriter, never failed ---------
+          - id: dti-over-policy
+            description: back-end debt-to-income above 43%
+            match: {predicate: comparison, field: credit.dti, gt: 0.43}
+            on_true:
+              - {disposition: enforce, level: hold, tag: dti_exception, severity: 3}
+          - id: ltv-over-policy
+            description: loan-to-value above 97%
+            match: {predicate: comparison, field: credit.ltv, gt: 0.97}
+            on_true:
+              - {disposition: enforce, level: hold, tag: ltv_exception, severity: 3}
+
+          # -- documentation: the remediation loop ---------------------------
+          - id: docs-incomplete
+            description: fewer than two pay stubs, or no W-2, or no photo ID, once intake has run
+            match:
+              op: and
+              of:
+                - {predicate: value, field: stage, in: [intake_complete, verification, conditions]}
+                - op: or
+                  of:
+                    - {predicate: comparison, field: docs.paystubs, lt: 2}
+                    - {predicate: existence, field: docs.w2, exists: false}
+                    - {predicate: existence, field: docs.photo_id, exists: false}
+            on_true:
+              - {disposition: remediate, level: ticket, tag: docs_missing, severity: 2}
+          - id: income-unverified
+            description: stated income differs from verified income by more than 10%
+            match: {predicate: comparison, field: verification.income_variance, gt: 0.10}
+            on_true:
+              - {disposition: enforce, level: hold, tag: income_mismatch, severity: 3}
+          - id: condition-stalled
+            description: a condition that keeps failing re-check; sustained failures escalate to a person
+            match: {predicate: value, field: condition.result, in: [failed]}
+            accumulate:
+              weight: 1.0
+              half_life: 72h
+              bands: {record: 1, enforce: 3, human: 4}
+            on_true:
+              - {disposition: coordinate, level: review, tag: condition_stalled, severity: 2}
+
+          # -- TRID (Reg Z 1026.19(e)): the Loan Estimate within 3 business days
+          - id: trid-loan-estimate-late
+            description: Loan Estimate delivered more than three business days after application
+            match: {predicate: comparison, field: trid.le_business_days, gt: 3}
+            on_true:
+              - {disposition: enforce, level: block, tag: trid_le_late, severity: 5}
+
+          # -- ECOA / Reg B (1002.9): adverse action notice with reasons, in 30 days
+          - id: adverse-action-without-reasons
+            description: a denial with no principal reasons recorded
+            match:
+              op: and
+              of:
+                - {predicate: value, field: decision.outcome, in: [denied, counteroffer]}
+                - {predicate: existence, field: decision.reasons, exists: false}
+            on_true:
+              - {disposition: enforce, level: block, tag: ecoa_reasons_missing, severity: 5}
+          - id: adverse-action-late
+            description: adverse action notice not sent within 30 days of a completed application
+            match:
+              op: and
+              of:
+                - {predicate: value, field: decision.outcome, in: [denied, counteroffer]}
+                - {predicate: comparison, field: decision.notice_days, gt: 30}
+            on_true:
+              - {disposition: coordinate, level: escalate, tag: ecoa_notice_late, severity: 5}
+
+          # -- HMDA (Reg C): the LAR fields are complete when the decision is made
+          - id: hmda-incomplete-at-decision
+            description: the decision is recorded while HMDA data points are missing
+            match:
+              op: and
+              of:
+                - {predicate: existence, field: decision.outcome, exists: true}
+                - {predicate: value, field: hmda.complete, in: [false]}
+            on_true:
+              - {disposition: enforce, level: hold, tag: hmda_incomplete, severity: 3}
+
+          # -- separation of duties: approval is a person's, and not the preparer's
+          - id: approval-by-preparer
+            description: the approver also prepared the file (maker = checker)
+            match: {predicate: value, field: approval.by_preparer, in: [true]}
+            on_true:
+              - {disposition: enforce, level: block, tag: sod_violation, severity: 5}
+          - id: approval-by-agent
+            description: an agent attempted to approve a loan
+            match: {predicate: value, field: approval.by_agent, in: [true]}
+            on_true:
+              - {disposition: enforce, level: block, tag: agent_approval, severity: 5}
+
+  corpora:
+    - id: lending-corpus
+      logic_canons: [lending-controls]            # the inline canon above, pinned at apply
+      valuation_source: regulatory-exposure
+    - id: conduct-corpus
+      # borrower-data leak, tool misuse, scope creep and deception on what the agents do
+      reasoning_canons: ["library/cn_seed_openai_agent_safety@latest"]
+
+  workspaces:
+    - id: origination
+      name: Origination controls
+      division: lending
+      engine: logic
+      corpus: lending-corpus
+    - id: agent-conduct
+      name: Agent conduct
+      division: lending
+      engine: reasoning
+      corpus: conduct-corpus
+
+  # ------------------------------------------------------------------------
+  # Responses on the logic soul: what the engine does when a rule fires.
+  # Most-restrictive wins per lane, so a file that is both late and over DTI
+  # is blocked, not merely held.
+  # ------------------------------------------------------------------------
+  policies:
+    - id: hold-credit-exception
+      workspace: origination
+      name: Hold a credit exception for an underwriter
+      description: DTI or LTV over policy pauses the file; an underwriter releases it with a documented exception or declines.
+      when: [{kind: presence, label: dti_exception}]
+      lane: enforce
+      level: hold
+      soul: logic
+    - id: hold-ltv-exception
+      workspace: origination
+      name: Hold an LTV exception for an underwriter
+      when: [{kind: presence, label: ltv_exception}]
+      lane: enforce
+      level: hold
+      soul: logic
+    - id: review-credit-exception
+      workspace: origination
+      name: Review a credit exception
+      when: [{kind: presence, label: dti_exception}]
+      lane: coordinate
+      level: review
+      soul: logic
+    - id: ticket-missing-documents
+      workspace: origination
+      name: Send missing-document conditions to the loan system
+      description: The conditions agent requests what is missing from the borrower through the loan system and re-checks when it arrives.
+      when: [{kind: presence, label: docs_missing}]
+      lane: remediate
+      level: webhook
+      soul: logic
+      config:
+        delivery: {endpoint: "${los_url:-http://localhost:8007/hooks/conditions}", method: POST}
+    - id: hold-income-mismatch
+      workspace: origination
+      name: Hold an income mismatch
+      when: [{kind: presence, label: income_mismatch}]
+      lane: enforce
+      level: hold
+      soul: logic
+    - id: review-stalled-condition
+      workspace: origination
+      name: A person takes over a condition the loop cannot clear
+      description: Four failed re-checks inside the half-life is a condition remediation will not clear on its own.
+      when: [{kind: strength, label: condition_stalled, op: ">=", threshold: 4}]
+      lane: coordinate
+      level: escalate
+      soul: logic
+    - id: block-trid-late
+      workspace: origination
+      name: Block a file whose Loan Estimate was late
+      when: [{kind: presence, label: trid_le_late}]
+      lane: enforce
+      level: block
+      soul: logic
+    - id: escalate-trid-late
+      workspace: origination
+      name: Escalate a late Loan Estimate to compliance
+      when: [{kind: presence, label: trid_le_late}]
+      lane: coordinate
+      level: escalate
+      soul: logic
+    - id: block-adverse-action-without-reasons
+      workspace: origination
+      name: Block an adverse action with no reasons
+      when: [{kind: presence, label: ecoa_reasons_missing}]
+      lane: enforce
+      level: block
+      soul: logic
+    - id: escalate-adverse-action-late
+      workspace: origination
+      name: Escalate a late adverse action notice
+      when: [{kind: presence, label: ecoa_notice_late}]
+      lane: coordinate
+      level: escalate
+      soul: logic
+    - id: hold-hmda-incomplete
+      workspace: origination
+      name: Hold a decision with HMDA data missing
+      when: [{kind: presence, label: hmda_incomplete}]
+      lane: enforce
+      level: hold
+      soul: logic
+    - id: block-self-approval
+      workspace: origination
+      name: Block an approval by the file's preparer
+      when: [{kind: presence, label: sod_violation}]
+      lane: enforce
+      level: block
+      soul: logic
+    - id: block-agent-approval
+      workspace: origination
+      name: Block an approval by an agent
+      when: [{kind: presence, label: agent_approval}]
+      lane: enforce
+      level: block
+      soul: logic
+    - id: escalate-agent-approval
+      workspace: origination
+      name: Escalate an agent's attempt to approve
+      when: [{kind: presence, label: agent_approval}]
+      lane: coordinate
+      level: escalate
+      soul: logic
+
+    # -- what the agents themselves do, on the reasoning soul ---------------
+    - id: hold-tool-misuse
+      workspace: agent-conduct
+      name: Hold an agent that misuses a tool
+      description: "A recoverable pause: the agent's next guarded step is refused until an operator releases it from the desk."
+      when: [{kind: strength, label: rt_agent_tool_misuse_v1, op: ">=", threshold: 0.5}]
+      lane: enforce
+      level: hold
+    - id: escalate-deception
+      workspace: agent-conduct
+      name: Escalate an agent's deception
+      when: [{kind: strength, label: rt_agent_deception_v1, op: ">=", threshold: 0.6}]
+      lane: coordinate
+      level: escalate
+    - id: remediate-borrower-data-leak
+      workspace: agent-conduct
+      name: Start the privacy incident playbook
+      description: GLBA safeguards; the lender's own incident endpoint takes it from here.
+      when: [{kind: strength, label: rt_agent_pii_leak_v1, op: ">=", threshold: 0.5}]
+      lane: remediate
+      level: webhook
+      config:
+        delivery: {endpoint: "${incident_url:-http://localhost:8007/hooks/incident}", method: POST}
+
+  # ------------------------------------------------------------------------
+  # What the agents themselves do, on the reasoning soul.
+  # ------------------------------------------------------------------------
+  circuit_breaker_policies:
+    - id: block-borrower-data-leak
+      workspace: agent-conduct
+      name: Block on borrower data leaving
+      description: Borrower data that has left cannot be recalled; the breaker opens and stays open until an operator releases it.
+      rules: [{tag: rt_agent_pii_leak_v1, op: ">=", value: 0.5}]
+      action: block
+
+  # ------------------------------------------------------------------------
+  # Declared and recorded in the Stack. These kinds have no provisioner yet:
+  # `apply` anchors them on the ledger and `plan` diffs them, but nothing
+  # below is enforced or delivered until their provisioners land (see the
+  # README, "What apply builds today").
+  # ------------------------------------------------------------------------
+  valuation_sources:
+    - id: regulatory-exposure
+      model: FAIR
+      catch_rate: 0.9
+      magnitude: {"1": 500, "2": 5000, "3": 25000, "4": 100000, "5": 1000000}
+
+  crosswalks:
+    - id: lending-regulation
+      framework: US consumer lending (ECOA/Reg B, TRID/Reg Z, HMDA/Reg C)
+      controls:
+        - {id: "Reg B 1002.9(a)(2)", title: "adverse action notice with specific reasons", satisfied_by: ["${DMZAGENT_VENDOR}/lending-controls@1"]}
+        - {id: "Reg Z 1026.19(e)(1)(iii)", title: "Loan Estimate within three business days", satisfied_by: ["${DMZAGENT_VENDOR}/lending-controls@1"]}
+        - {id: "Reg C 1003.4", title: "data collected for the LAR", satisfied_by: ["${DMZAGENT_VENDOR}/lending-controls@1"]}
+        - {id: "GLBA Safeguards 314.4", title: "safeguards over customer information", satisfied_by: ["library/cn_seed_openai_agent_safety@latest"]}
+
+  sources:
+    - id: loan-system-events
+      division: lending
+      kind: sdk
+      description: the loan system's adapter emits one event per file change through the SDK; the agents' steps run client-side, so the files stay with the lender
+
+  connectors:
+    - id: loan-system
+      kind: webhook
+      description: conditions, holds and releases flow back into the loan system of record
+
+  roles:
+    - {principal: underwriting-lead@tidewater.example, role: division_admin, scope: lending}
+    - {principal: underwriter@tidewater.example, role: analyst, scope: origination}
+    - {principal: closer@tidewater.example, role: analyst, scope: origination}
+    - {principal: compliance@tidewater.example, role: auditor, scope: lending}
+
+  outputs:
+    - id: examiner-audit-pack
+      kind: signed_zip
+      destination: ${audit_destination:-file://./out/audit}
+      cadence: monthly
+      sign: true
+    - id: exceptions-register
+      kind: csv
+      destination: ${exceptions_destination:-file://./out/exceptions}
+      cadence: weekly
+
+  # ------------------------------------------------------------------------
+  # `dmz verify`: policy tests on the platform's evaluator. Labels are what a
+  # file's soul would carry; each line says what the engine must resolve.
+  # ------------------------------------------------------------------------
+  expectations:
+    - id: clean-file-proceeds
+      name: a clean file proceeds untouched
+      workspace: origination
+      soul: logic
+      labels: {"lending-controls@1:dti-over-policy": 0.0}
+      enforce: none
+      coordinate: none
+    - id: dti-over-policy-holds-and-asks
+      name: DTI over policy holds and asks an underwriter
+      workspace: origination
+      soul: logic
+      labels: {dti_exception: 1.0}
+      enforce: hold
+      coordinate: review
+      policies: [Hold a credit exception for an underwriter, Review a credit exception]
+    - id: missing-docs-open-a-ticket
+      name: missing documents open a remediation ticket
+      workspace: origination
+      soul: logic
+      labels: {docs_missing: 1.0}
+      enforce: none
+      remediate: webhook
+    - id: three-failed-rechecks-stay-with-the-loop
+      name: three failed re-checks stay with the loop
+      workspace: origination
+      soul: logic
+      labels: {condition_stalled: 3.0}
+      coordinate: none
+    - id: four-failed-rechecks-go-to-a-person
+      name: four failed re-checks go to a person
+      workspace: origination
+      soul: logic
+      labels: {condition_stalled: 4.0}
+      coordinate: escalate
+    - id: late-loan-estimate-blocks
+      name: a late Loan Estimate blocks and escalates
+      workspace: origination
+      soul: logic
+      labels: {trid_le_late: 1.0, dti_exception: 1.0}
+      enforce: block
+      coordinate: escalate
+    - id: denial-without-reasons-blocks
+      name: a denial without reasons blocks
+      workspace: origination
+      soul: logic
+      labels: {ecoa_reasons_missing: 1.0}
+      enforce: block
+    - id: hmda-gap-holds-the-decision
+      name: missing HMDA data holds the decision
+      workspace: origination
+      soul: logic
+      labels: {hmda_incomplete: 1.0}
+      enforce: hold
+    - id: preparer-cannot-approve
+      name: the preparer cannot approve
+      workspace: origination
+      soul: logic
+      labels: {sod_violation: 1.0}
+      enforce: block
+      policies: [Block an approval by the file's preparer]
+    - id: an-agent-never-approves
+      name: an agent never approves
+      workspace: origination
+      soul: logic
+      labels: {agent_approval: 1.0}
+      enforce: block
+      coordinate: escalate
+    - id: borrower-data-leak-remediates
+      name: a borrower data leak starts the playbook
+      workspace: agent-conduct
+      labels: {rt_agent_pii_leak_v1: 0.7}
+      remediate: webhook
+      policies: [Start the privacy incident playbook]
+    - id: tool-misuse-holds
+      name: tool misuse holds the agent
+      workspace: agent-conduct
+      labels: {rt_agent_tool_misuse_v1: 0.6}
+      enforce: hold

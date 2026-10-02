@@ -1,0 +1,256 @@
+# Solution Manifest for a fleet of Claude Code sessions that build software.
+#
+# Dream Builder runs one `claude -p` session per lease, each in its own git
+# worktree, and its runner hears every tool call before and after it happens
+# (dream-maker docs/32-piloting-claude-code.md). This file is the governance
+# that fleet runs under. The runner turns each hook and stream event into one
+# event for DMZ Agent; the rulebook below decides, and the runner's PreToolUse
+# hook enforces the answer. Subjects are seats: `seat:<project>/<n>`.
+#
+#   * hard rails, blocked outright: a push from inside a session, a write
+#     outside its worktree, any action once its lease has lapsed, consenting
+#     to its own claim in memory, running on a model that is not the pinned
+#     one;
+#   * pauses, held for the operator: a spent budget, a credential or billing
+#     failure, spend that disagrees with the bill by more than 1%;
+#   * questions, reviewed: a stalled session, two live leases on one path,
+#     spend not yet reconciled after fifteen minutes;
+#   * a record, escalating only when sustained: edits the session never
+#     planned (its sins, dream-maker docs/28-sins.md).
+#
+# The runner computes the facts the DSL cannot compare itself (one field
+# against another): `tool.in_worktree`, `tool.in_plan`, `lease.stalled`,
+# `session.model_pinned`, `spend.divergence`.
+#
+#   ./setup.sh [--var posture=observe]
+#
+apiVersion: dmzagent.com/v1
+kind: SolutionManifest
+metadata:
+  name: dream-builder-fleet
+  vendor: ${DMZAGENT_VENDOR}
+  version: 1
+spec:
+  deployment:
+    target: cloud
+
+  divisions:
+    - id: fleet
+      name: Dream Builder fleet
+      config:
+        # Observe first: a new fleet runs at N=1 with every rule recording,
+        # and moves to enforce once the operator's first audit passes.
+        enforcement_posture: ${posture:-observe}
+
+  logic_canons:
+    - id: fleet-rails
+      slug: fleet-rails
+      name: Fleet rails
+      description: what a Claude Code session in the fleet may never do, what pauses it, and what is only recorded
+      rulebook:
+        rules:
+          # -- hard rails --------------------------------------------------------
+          - id: push-from-session
+            description: a session tried to push; only the runner pushes, after the session ends
+            match:
+              op: and
+              of:
+                - {predicate: value, field: tool.name, in: [Bash]}
+                - {predicate: comparison, field: tool.command, regex: "\\bgit\\s+push\\b"}
+            on_true:
+              - {disposition: enforce, level: block, tag: push_attempt, severity: 5}
+          - id: write-outside-worktree
+            description: an edit or write outside the lease's worktree
+            match:
+              op: and
+              of:
+                - {predicate: value, field: tool.name, in: [Edit, Write, NotebookEdit]}
+                - {predicate: value, field: tool.in_worktree, in: [false]}
+            on_true:
+              - {disposition: enforce, level: block, tag: out_of_bounds, severity: 5}
+          - id: act-without-lease
+            description: any tool call after the lease expired or was released
+            match: {predicate: value, field: lease.state, in: [expired, released]}
+            on_true:
+              - {disposition: enforce, level: block, tag: lease_lapsed, severity: 4}
+          - id: self-consent
+            description: a session ran `mem approve`; consent to a claim widening is never the asker's
+            match:
+              op: and
+              of:
+                - {predicate: value, field: tool.name, in: [Bash]}
+                - {predicate: comparison, field: tool.command, regex: "\\bmem(\\.py)?\\s+approve\\b"}
+            on_true:
+              - {disposition: enforce, level: block, tag: self_consent, severity: 5}
+          - id: model-not-pinned
+            description: the session reported a model other than the one the lease pinned
+            match: {predicate: value, field: session.model_pinned, in: [false]}
+            on_true:
+              - {disposition: enforce, level: block, tag: model_drift, severity: 4}
+
+          # -- pauses ------------------------------------------------------------
+          - id: budget-spent
+            description: the lease's token budget is spent
+            match: {predicate: comparison, field: lease.spent_ratio, gte: 1.0}
+            on_true:
+              - {disposition: enforce, level: hold, tag: budget_spent, severity: 3}
+          - id: credential-failure
+            description: the API refused the fleet's key or its billing
+            match: {predicate: value, field: retry.error, in: [authentication_failed, billing_error]}
+            on_true:
+              - {disposition: enforce, level: hold, tag: credential_failure, severity: 4}
+          - id: spend-diverges
+            description: a settled minute where the fleet's metered spend differs from the bill by more than 1%
+            match:
+              op: and
+              of:
+                - {predicate: value, field: kind, in: [reconcile]}
+                - {predicate: comparison, field: spend.divergence, gt: 0.01}
+            on_true:
+              - {disposition: enforce, level: hold, tag: spend_divergence, severity: 4}
+
+          # -- questions -----------------------------------------------------------
+          - id: stalled
+            description: no event from the session for longer than its lease's half-life
+            match: {predicate: value, field: lease.stalled, in: [true]}
+            on_true:
+              - {disposition: coordinate, level: review, tag: stalled, severity: 2}
+          - id: collision
+            description: a second live lease touched a path this one touched
+            match: {predicate: comparison, field: path.live_leases, gte: 2}
+            on_true:
+              - {disposition: coordinate, level: review, tag: collision, severity: 2}
+          - id: spend-unreconciled
+            description: a minute older than fifteen minutes the bill has not confirmed
+            match: {predicate: comparison, field: spend.unreconciled_age_s, gt: 900}
+            on_true:
+              - {disposition: coordinate, level: review, tag: spend_unreconciled, severity: 2}
+
+          # -- a record: sins ------------------------------------------------------
+          - id: unplanned-edit
+            description: an edit to a path the session's plan never named; sustained deviation escalates
+            match:
+              op: and
+              of:
+                - {predicate: value, field: tool.name, in: [Edit, Write, NotebookEdit]}
+                - {predicate: value, field: tool.in_plan, in: [false]}
+            accumulate:
+              weight: 1.0
+              half_life: 1h
+              bands: {record: 1, enforce: 3, human: 5}
+            on_true:
+              - {disposition: record, tag: sin_unplanned}
+
+  corpora:
+    - id: rails-corpus
+      logic_canons: [fleet-rails]
+    - id: transcript-corpus
+      # deception and tool misuse in what the sessions say and do
+      reasoning_canons: ["library/cn_seed_openai_agent_safety@latest"]
+
+  workspaces:
+    - id: rails
+      name: Fleet rails
+      division: fleet
+      engine: logic
+      corpus: rails-corpus
+    - id: transcripts
+      name: Session transcripts
+      division: fleet
+      engine: reasoning
+      corpus: transcript-corpus
+
+  policies:
+    - {id: block-push, workspace: rails, soul: logic, name: Block a push from a session,
+       when: [{kind: presence, label: push_attempt}], lane: enforce, level: block}
+    - {id: block-out-of-bounds, workspace: rails, soul: logic, name: Block a write outside the worktree,
+       when: [{kind: presence, label: out_of_bounds}], lane: enforce, level: block}
+    - {id: block-lapsed, workspace: rails, soul: logic, name: Block a session whose lease lapsed,
+       when: [{kind: presence, label: lease_lapsed}], lane: enforce, level: block}
+    - {id: block-self-consent, workspace: rails, soul: logic, name: Block a session consenting to its own claim,
+       when: [{kind: presence, label: self_consent}], lane: enforce, level: block}
+    - {id: escalate-self-consent, workspace: rails, soul: logic, name: Escalate a session consenting to its own claim,
+       when: [{kind: presence, label: self_consent}], lane: coordinate, level: escalate}
+    - {id: block-model-drift, workspace: rails, soul: logic, name: Block a session on an unpinned model,
+       when: [{kind: presence, label: model_drift}], lane: enforce, level: block}
+    - {id: hold-budget, workspace: rails, soul: logic, name: Hold a session that spent its budget,
+       when: [{kind: presence, label: budget_spent}], lane: enforce, level: hold}
+    - {id: hold-credential, workspace: rails, soul: logic, name: Hold on a credential or billing failure,
+       when: [{kind: presence, label: credential_failure}], lane: enforce, level: hold}
+    - id: hold-spend-divergence
+      workspace: rails
+      soul: logic
+      name: Hold the fleet when spend disagrees with the bill
+      description: Spend that cannot be proven is not spend to scale on. The scheduler reads this hold and stops growing the fleet.
+      when: [{kind: presence, label: spend_divergence}]
+      lane: enforce
+      level: hold
+    - {id: escalate-spend-divergence, workspace: rails, soul: logic, name: Escalate spend that disagrees with the bill,
+       when: [{kind: presence, label: spend_divergence}], lane: coordinate, level: escalate}
+    - {id: review-stalled, workspace: rails, soul: logic, name: Review a stalled session,
+       when: [{kind: presence, label: stalled}], lane: coordinate, level: review}
+    - {id: review-collision, workspace: rails, soul: logic, name: Review a collision,
+       when: [{kind: presence, label: collision}], lane: coordinate, level: review}
+    - {id: review-unreconciled, workspace: rails, soul: logic, name: Review spend the bill has not confirmed,
+       when: [{kind: presence, label: spend_unreconciled}], lane: coordinate, level: review}
+    - id: escalate-sustained-deviation
+      workspace: rails
+      soul: logic
+      name: Escalate a session that keeps leaving its plan
+      description: Five unplanned edits inside the hour is not a session finding an extra file; a person reads the plan against the diff.
+      when: [{kind: strength, label: sin_unplanned, op: ">=", threshold: 5}]
+      lane: coordinate
+      level: escalate
+    # -- the transcripts, on the reasoning soul ------------------------------
+    - {id: hold-tool-misuse, workspace: transcripts, name: Hold a session that misuses a tool,
+       when: [{kind: strength, label: rt_agent_tool_misuse_v1, op: ">=", threshold: 0.5}], lane: enforce, level: hold}
+    - {id: escalate-deception, workspace: transcripts, name: Escalate a session's deception,
+       when: [{kind: strength, label: rt_agent_deception_v1, op: ">=", threshold: 0.6}], lane: coordinate, level: escalate}
+
+  # ------------------------------------------------------------------------
+  # Declared and recorded in the Stack; no provisioner yet (see README).
+  # ------------------------------------------------------------------------
+  sources:
+    - id: runner-events
+      division: fleet
+      kind: sdk
+      description: one event per hook call and stream event, from each lease's runner
+
+  roles:
+    - {principal: operator@dmzagent.example, role: owner, scope: fleet}
+    - {principal: auditor@dmzagent.example, role: auditor, scope: fleet}
+
+  outputs:
+    - id: fleet-audit-pack
+      kind: signed_zip
+      destination: ${audit_destination:-file://./out/fleet-audit}
+      cadence: weekly
+      sign: true
+    - id: spend-reconciliation
+      kind: csv
+      destination: ${spend_destination:-file://./out/spend}
+      cadence: daily
+
+  # The operator's audit (dream-maker docs/31 §2.5) reads these as the floor.
+  expectations:
+    - {id: push-blocks, name: a push from a session is blocked, workspace: rails, soul: logic,
+       labels: {push_attempt: 1.0}, enforce: block}
+    - {id: out-of-bounds-blocks, name: a write outside the worktree is blocked, workspace: rails, soul: logic,
+       labels: {out_of_bounds: 1.0}, enforce: block}
+    - {id: self-consent-blocks, name: self-consent blocks and escalates, workspace: rails, soul: logic,
+       labels: {self_consent: 1.0}, enforce: block, coordinate: escalate}
+    - {id: budget-holds, name: a spent budget holds, workspace: rails, soul: logic,
+       labels: {budget_spent: 1.0}, enforce: hold}
+    - {id: divergence-holds-the-fleet, name: spend off the bill holds the fleet, workspace: rails, soul: logic,
+       labels: {spend_divergence: 1.0}, enforce: hold, coordinate: escalate,
+       policies: [Hold the fleet when spend disagrees with the bill]}
+    - {id: collision-asks, name: a collision is reviewed not blocked, workspace: rails, soul: logic,
+       labels: {collision: 1.0}, enforce: none, coordinate: review}
+    - {id: four-sins-recorded, name: four unplanned edits are only recorded, workspace: rails, soul: logic,
+       labels: {sin_unplanned: 4.0}, enforce: none, coordinate: none}
+    - {id: five-sins-escalate, name: five unplanned edits escalate, workspace: rails, soul: logic,
+       labels: {sin_unplanned: 5.0}, coordinate: escalate}
+    - {id: the-worst-wins, name: a push during a collision is blocked, workspace: rails, soul: logic,
+       labels: {push_attempt: 1.0, collision: 1.0}, enforce: block, coordinate: review}
+    - {id: deception-escalates, name: deception in a transcript escalates, workspace: transcripts,
+       labels: {rt_agent_deception_v1: 0.8}, coordinate: escalate}

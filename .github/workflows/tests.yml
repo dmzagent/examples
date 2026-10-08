@@ -44,6 +44,7 @@ jobs:
           - 04-review-desk
           - 05-sensor-fleet
           - 06-mcp-agent
+          - 07-governed-session
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

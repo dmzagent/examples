@@ -2,7 +2,7 @@
 
 Runnable examples for the DMZAgent platform and its SDKs.
 
-Six of them form a suite. Each is built the same way: a **Solution
+Seven of them form a suite. Each is built the same way: a **Solution
 Manifest** (`solution.yaml`) that declares what the platform should hold for
 the application, a **setup script** that validates, plans, applies and
 verifies it through the platform's own GitOps wheel, and an **application**
@@ -25,13 +25,15 @@ in front of any host.
 | 04 | [`04-review-desk`](04-review-desk) | Hold, review, release. The desk for the people behind governed agents: recoverable holds against hard stops, the review queue, manual overrides, ledger anchors, the posture ladder, remediation webhooks. | simulated agents |
 | 05 | [`05-sensor-fleet`](05-sensor-fleet) | The deterministic logic engine, with no model at all. A versioned rulebook of predicates and half-life accumulators governs a fleet of chiller pumps; the controller checks each pump's breaker before its actuator runs. | nowhere |
 | 06 | [`06-mcp-agent`](06-mcp-agent) | The platform's MCP server. An agent discovers the platform's tools over MCP, pre-flights every governed action and records it on the ledger, with a harness that does not take the model's word for it. The same server attached to Claude Code, Claude Desktop and Cursor. | on your machine |
+| 07 | [`07-governed-session`](07-governed-session) | Agent mode. A coding agent asks before every tool call and runs it only on the answer: a push blocked, a network call held until a person approves it, a test run recorded as a positive behavior, and every refusal reported with who refused. | simulated agent |
 
 The first three are the platform in its three shapes: hosted chatbot, hosted
 agent, and a library inside an application you already have. 04 is what
 happens *after* a policy fires, for the people who have to decide; 05 is the
 same breaker and ledger driven by rules alone, for systems that act without
 ever being asked a question; 06 is the platform as a tool provider for any
-agent that speaks MCP.
+agent that speaks MCP; 07 is agent mode, where an agent asks before
+every call and the governor's answer is the next step.
 
 [`microvm-containment-go`](microvm-containment-go) stands apart: a Go program
 that boots one Firecracker microVM per task. It has its own README.

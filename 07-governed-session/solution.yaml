@@ -1,0 +1,70 @@
+# Solution Manifest for a coding agent governed one step at a time.
+#
+# Harbor Supply runs a coding agent on its billing service. The agent states
+# what it will do, then asks before every tool call; DMZAgent answers each
+# step with a directive (proceed, warn, hold, block, shutdown), and the agent
+# runs the call only on proceed or warn. This file is the rulebook that
+# answers:
+#   * a push from inside the session is blocked: only the release pipeline
+#     pushes;
+#   * a call that reaches the network (curl, wget) is held for a person, who
+#     approves or declines it from the operator's command line;
+#   * a test run before claiming the work is recorded as a positive behavior,
+#     so the agent's conduct record shows what it did well as well as badly.
+# The posture is a variable, so the same file runs in `observe` first.
+#
+#   ./setup.sh [--var posture=enforce]
+#
+apiVersion: dmzagent.com/v1
+kind: SolutionManifest
+metadata:
+  name: harbor-governed-session
+  vendor: ${DMZAGENT_VENDOR}
+  version: 1
+spec:
+  divisions:
+    - id: main
+      division_id: ${DMZAGENT_DIVISION_ID}
+      config:
+        enforcement_posture: ${posture:-enforce}
+
+  logic_canons:
+    - id: agent-rails
+      slug: coding-agent-rails
+      name: Coding agent rails
+      description: what a coding agent may not do, what waits for a person, and what is worth recording
+      rulebook:
+        rules:
+          - id: remote-write
+            description: a push or a remote change from inside the session
+            match: {predicate: comparison, field: args.command, regex: "^git\\s+(push|remote)\\b"}
+            on_true:
+              - {disposition: enforce, level: block, tag: remote_write, severity: 5}
+          - id: egress
+            description: a call that reaches the network; a person decides whether it may
+            match: {predicate: comparison, field: args.command, regex: "^(curl|wget)\\b"}
+            on_true:
+              - {disposition: enforce, level: hold, tag: unsanctioned_egress, severity: 4}
+          - id: verified
+            description: the agent ran the tests before claiming the work
+            match:
+              op: and
+              of:
+                - {predicate: value, field: phase, in: [call]}
+                - {predicate: comparison, field: args.command, regex: "^pytest\\b"}
+            on_true:
+              - {disposition: record, tag: verified_before_claiming, polarity: positive}
+
+  corpora:
+    - id: rails-corpus
+      logic_canons: [agent-rails]             # the inline canon above, pinned at apply
+
+  workspaces:
+    - id: rails
+      division: main
+      engine: logic
+      corpus: rails-corpus
+
+  roles:
+    # Segregation of duties: the platform requires an auditor on the division.
+    - {principal: auditor@harbor.example, role: auditor, scope: main}
